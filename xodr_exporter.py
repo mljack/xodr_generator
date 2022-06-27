@@ -1,13 +1,13 @@
 from numpy import arange
 from scenariogeneration import xodr
-from shapely.geometry import MultiLineString, Point
+from shapely.geometry import LineString, Point
 import os
 import math
 from scipy.interpolate import interp1d, CubicSpline
 from scipy import stats, mean
 
 def resample_linear(pts, d=1.0):
-    ref = MultiLineString([(pts[idx], pts[idx+1]) for idx in range(len(pts)-1)])
+    ref = LineString(pts)
     new_pts = []
     n = math.ceil(ref.length / d)
     for idx in range(0, n+1):
@@ -57,7 +57,7 @@ def export_road(odr, road, road_id):
     ref_line = road.ref_line
     pts = [(ref_line[0][idx], ref_line[1][idx]) for idx in range(len(ref_line[0]))]
 
-    ref = MultiLineString([(pts[idx], pts[idx+1]) for idx in range(len(pts)-1)])
+    ref = LineString(pts)
     #CubicSpline([x for x,y in pts], [y for x,y in pts], bc_type=((2, 0.0), (2, 0.0)))
     for idx in range(len(pts)-1):
         dx = pts[idx+1][0] - pts[idx][0]
@@ -77,12 +77,12 @@ def export_road(odr, road, road_id):
         width_b = []
         soffset = []
         right_bnd_pts = [(lane.right_bnd[0][idx], lane.right_bnd[1][idx]) for idx in range(len(lane.right_bnd[0]))]
-        right_bnd_pts = resample_linear(right_bnd_pts, 1.0)
+        right_bnd_pts = resample_linear(right_bnd_pts, 0.1)
         #print(lane_subid, right_bnd.length)
         right_bnd_s = []
         right_bnd_t = []
         old_pt2 = None
-        for pt in right_bnd_pts:
+        for pt_idx, pt in enumerate(right_bnd_pts):
             pt2 = Point(pt[0], pt[1])
             if old_pt2 is not None and old_pt2.distance(pt2) < 1.0:
                 continue
@@ -92,6 +92,10 @@ def export_road(odr, road, road_id):
             right_bnd_t.append(d)
             if left_bnd_st is not None:
                 d -= left_bnd_st(s)
+            if pt_idx == 0:
+                s = 0.0
+            elif pt_idx == len(right_bnd_pts) - 1:
+                s = LineString(right_bnd_pts).length
             width_a.append(d)
             soffset.append(s)
             old_pt2 = pt2

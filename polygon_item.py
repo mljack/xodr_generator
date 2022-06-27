@@ -51,9 +51,9 @@ class PolygonInteractor:
     picked = None
 
     current_selection_set = set()
-    seletion_set = set()
+    selection_set = set()
 
-    def __init__(self, ax, poly):
+    def __init__(self, ax, poly, left_bnd, right_bnd):
         if poly.figure is None:
             raise RuntimeError('You must first add the polygon to a figure '
                                'or canvas before defining the interactor')
@@ -63,24 +63,35 @@ class PolygonInteractor:
         poly.set_picker(True)
 
         x, y = zip(*self.poly.xy)
-        self.line = Line2D(x, y, marker='o', markerfacecolor='r', animated=True)
-        self.ax.add_line(self.line)
+
+        # points of lane boundaries
+        # self.line = Line2D(x, y, marker='o', markerfacecolor='r', animated=True)
+        # self.ax.add_line(self.line)
+
+        # lane boundaries
         self.line2 = Line2D(x, y)
         self.ax.add_line(self.line2)
+
+        x, y = left_bnd
+        self.left_bnd = Line2D(x, y, marker='v', color='r', animated=True, markersize=8)
+        self.ax.add_line(self.left_bnd)
+        x, y = right_bnd
+        self.right_bnd = Line2D(x, y, marker='^', color='g', animated=True, markersize=8)
+        self.ax.add_line(self.right_bnd)
 
         self.cid = self.poly.add_callback(self.poly_changed)
         self._ind = None  # the active vert
 
         canvas.mpl_connect('draw_event', self.on_draw)
-        canvas.mpl_connect('button_press_event', self.on_button_press)
-        canvas.mpl_connect('key_press_event', self.on_key_press)
-        canvas.mpl_connect('button_release_event', self.on_button_release)
-        canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
+        # canvas.mpl_connect('button_press_event', self.on_button_press)
+        # canvas.mpl_connect('key_press_event', self.on_key_press)
+        # canvas.mpl_connect('button_release_event', self.on_button_release)
+        # canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
 
         self.canvas = canvas
 
     def redraw(self):
-        if self.poly in PolygonInteractor.seletion_set:
+        if self.poly in PolygonInteractor.selection_set:
             self.poly.set_color(self.my_color)
             self.ax.draw_artist(self.poly)
             #print(f"Redraw {self.poly} {PolygonInteractor.picked == self.poly}")
@@ -91,7 +102,9 @@ class PolygonInteractor:
             self.poly.set_color(self.my_color2)
             self.ax.draw_artist(self.poly)
         if self.poly == PolygonInteractor.picked:
-            self.ax.draw_artist(self.line)
+            #self.ax.draw_artist(self.line)
+            self.ax.draw_artist(self.left_bnd)
+            self.ax.draw_artist(self.right_bnd)
 
 
     def on_draw(self, event):
@@ -103,98 +116,104 @@ class PolygonInteractor:
     def poly_changed(self, poly):
         """This method is called whenever the pathpatch object is called."""
         # only copy the artist props to the line (except visibility)
-        vis = self.line.get_visible()
-        Artist.update_from(self.line, poly)
-        self.line.set_visible(vis)  # don't use the poly visibility state
+        # vis = self.line.get_visible()
+        # Artist.update_from(self.line, poly)
+        # self.line.set_visible(vis)  # don't use the poly visibility state
+        vis = self.left_bnd.get_visible()
+        Artist.update_from(self.left_bnd, poly)
+        self.left_bnd.set_visible(vis)  # don't use the poly visibility state
+        vis = self.right_bnd.get_visible()
+        Artist.update_from(self.right_bnd, poly)
+        self.right_bnd.set_visible(vis)  # don't use the poly visibility state
 
-    def get_ind_under_point(self, event):
-        """
-        Return the index of the point closest to the event position or *None*
-        if no point is within ``self.epsilon`` to the event position.
-        """
-        # display coords
-        xy = np.asarray(self.poly.xy)
-        xyt = self.poly.get_transform().transform(xy)
-        xt, yt = xyt[:, 0], xyt[:, 1]
-        d = np.hypot(xt - event.x, yt - event.y)
-        indseq, = np.nonzero(d == d.min())
-        ind = indseq[0]
+    # def get_ind_under_point(self, event):
+    #     """
+    #     Return the index of the point closest to the event position or *None*
+    #     if no point is within ``self.epsilon`` to the event position.
+    #     """
+    #     # display coords
+    #     xy = np.asarray(self.poly.xy)
+    #     xyt = self.poly.get_transform().transform(xy)
+    #     xt, yt = xyt[:, 0], xyt[:, 1]
+    #     d = np.hypot(xt - event.x, yt - event.y)
+    #     indseq, = np.nonzero(d == d.min())
+    #     ind = indseq[0]
 
-        if d[ind] >= self.epsilon:
-            ind = None
+    #     if d[ind] >= self.epsilon:
+    #         ind = None
 
-        return ind
+    #     return ind
 
-    def on_button_press(self, event):
-        """Callback for mouse button presses."""
-        if not self.showverts:
-            return
-        if event.inaxes is None:
-            return
-        if event.button != 1:
-            return
-        self._ind = self.get_ind_under_point(event)
+    # def on_button_press(self, event):
+    #     """Callback for mouse button presses."""
+    #     if not self.showverts:
+    #         return
+    #     if event.inaxes is None:
+    #         return
+    #     if event.button != 1:
+    #         return
+    #     self._ind = self.get_ind_under_point(event)
 
-    def on_button_release(self, event):
-        """Callback for mouse button releases."""
-        if not self.showverts:
-            return
-        if event.button != 1:
-            return
-        self._ind = None
+    # def on_button_release(self, event):
+    #     """Callback for mouse button releases."""
+    #     if not self.showverts:
+    #         return
+    #     if event.button != 1:
+    #         return
+    #     self._ind = None
 
-    def on_key_press(self, event):
-        """Callback for key presses."""
-        if PolygonInteractor.picked != self.poly:
-            return
-        if not event.inaxes:
-            return
-        if event.key == 't':
-            self.showverts = not self.showverts
-            self.line.set_visible(self.showverts)
-            if not self.showverts:
-                self._ind = None
-        elif event.key == 'd':
-            ind = self.get_ind_under_point(event)
-            if ind is not None:
-                self.poly.xy = np.delete(self.poly.xy, ind, axis=0)
-                self.line.set_data(zip(*self.poly.xy))
-        elif event.key == 'i':
-            xys = self.poly.get_transform().transform(self.poly.xy)
-            p = event.x, event.y  # display coords
-            for i in range(len(xys) - 1):
-                s0 = xys[i]
-                s1 = xys[i + 1]
-                d = dist_point_to_segment(p, s0, s1)
-                if d <= self.epsilon:
-                    self.poly.xy = np.insert(self.poly.xy, i+1,
-                        [event.xdata, event.ydata], axis=0)
-                    self.line.set_data(zip(*self.poly.xy))
-                    break
-        if self.line.stale:
-            self.canvas.draw_idle()
+    # def on_key_press(self, event):
+    #     """Callback for key presses."""
+    #     if PolygonInteractor.picked != self.poly:
+    #         return
+    #     if not event.inaxes:
+    #         return
+    #     if event.key == 't':
+    #         self.showverts = not self.showverts
+    #         self.line.set_visible(self.showverts)
+    #         if not self.showverts:
+    #             self._ind = None
+    #     elif event.key == 'd':
+    #         ind = self.get_ind_under_point(event)
+    #         if ind is not None:
+    #             self.poly.xy = np.delete(self.poly.xy, ind, axis=0)
+    #             self.line.set_data(zip(*self.poly.xy))
+    #     elif event.key == 'i':
+    #         xys = self.poly.get_transform().transform(self.poly.xy)
+    #         p = event.x, event.y  # display coords
+    #         for i in range(len(xys) - 1):
+    #             s0 = xys[i]
+    #             s1 = xys[i + 1]
+    #             d = dist_point_to_segment(p, s0, s1)
+    #             if d <= self.epsilon:
+    #                 self.poly.xy = np.insert(self.poly.xy, i+1,
+    #                     [event.xdata, event.ydata], axis=0)
+    #                 self.line.set_data(zip(*self.poly.xy))
+    #                 break
+    #     if self.line.stale:
+    #         self.canvas.draw_idle()
 
-    def on_mouse_move(self, event):
-        """Callback for mouse movements."""
-        if PolygonInteractor.picked != self.poly:
-            return
-        if not self.showverts:
-            return
-        if self._ind is None:
-            return
-        if event.inaxes is None:
-            return
-        if event.button != 1:
-            return
-        x, y = event.xdata, event.ydata
+    # def on_mouse_move(self, event):
+    #     """Callback for mouse movements."""
+    #     if PolygonInteractor.picked != self.poly:
+    #         return
+    #     if not self.showverts:
+    #         return
+    #     if self._ind is None:
+    #         return
+    #     if event.inaxes is None:
+    #         return
+    #     if event.button != 1:
+    #         return
+    #     x, y = event.xdata, event.ydata
 
-        self.poly.xy[self._ind] = x, y
-        if self._ind == 0:
-            self.poly.xy[-1] = x, y
-        elif self._ind == len(self.poly.xy) - 1:
-            self.poly.xy[0] = x, y
-        self.line.set_data(zip(*self.poly.xy))
+    #     self.poly.xy[self._ind] = x, y
+    #     if self._ind == 0:
+    #         self.poly.xy[-1] = x, y
+    #     elif self._ind == len(self.poly.xy) - 1:
+    #         self.poly.xy[0] = x, y
+    #     self.line.set_data(zip(*self.poly.xy))
 
-        self.canvas.restore_region(self.background)
-        self.redraw()
-        self.canvas.blit(self.ax.bbox)
+    #     self.canvas.restore_region(self.background)
+    #     self.redraw()
+    #     self.canvas.blit(self.ax.bbox)
