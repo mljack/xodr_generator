@@ -77,7 +77,18 @@ def export_road(odr, road, road_id):
         width_b = []
         soffset = []
         right_bnd_pts = [(lane.right_bnd[0][idx], lane.right_bnd[1][idx]) for idx in range(len(lane.right_bnd[0]))]
-        right_bnd_pts = resample_linear(right_bnd_pts, 0.1)
+        # if lane.full_id == "557024172,0,0,36,0":
+        #     new_right_bnd_pts = resample_linear(right_bnd_pts, 0.1)
+        #     print(f"[{lane.full_id}] end   ","    right_bnd_pts: %.10f %.10f" % (right_bnd_pts[-1][0], right_bnd_pts[-1][1]))
+        #     print(f"[{lane.full_id}] end   ","new_right_bnd_pts: %.10f %.10f" % (new_right_bnd_pts[-1][0], new_right_bnd_pts[-1][1]))
+        # if lane.full_id == "557024172,0,0,37,0":
+        #     new_right_bnd_pts = resample_linear(right_bnd_pts, 0.1)
+        #     print(f"[{lane.full_id}] start ","    right_bnd_pts: %.10f %.10f" % (right_bnd_pts[0][0], right_bnd_pts[0][1]))
+        #     print(f"[{lane.full_id}] start ","new_right_bnd_pts: %.10f %.10f" % (new_right_bnd_pts[0][0], new_right_bnd_pts[0][1]))
+
+        ## todo: resampling introduces more accumulated errors on lanes of curved roads.
+        #right_bnd_pts = resample_linear(right_bnd_pts, 0.1)
+        
         #print(lane_subid, right_bnd.length)
         right_bnd_s = []
         right_bnd_t = []
@@ -104,6 +115,10 @@ def export_road(odr, road, road_id):
         width_b.append(0.0)
         left_bnd_st = interp1d(right_bnd_s, right_bnd_t, fill_value="extrapolate")
 
+        # if lane.full_id == "557024172,0,0,36,0":
+        #     print(f"[{lane.full_id}] end   ","    width: %.10f" % (width_a[-1]))
+        # if lane.full_id == "557024172,0,0,37,0":
+        #     print(f"[{lane.full_id}] start ","    width: %.10f" % (width_a[0]))
 
         lanesection.add_right_lane(xodr.Lane(lane_type=xodr.LaneType.driving, a=width_a, b=width_b, soffset=soffset))
 

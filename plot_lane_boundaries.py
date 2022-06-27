@@ -5,6 +5,7 @@ matplotlib.use('TkAgg')
 #matplotlib.use('QtAgg') 
 #matplotlib.use('WebAgg') 
 
+import os
 import math
 from collections import deque
 import numpy as np
@@ -66,9 +67,7 @@ class Lane:
 
     base_x = -257882.086764
     base_y = 49751.229238
-    for pt_idx, (x,y,z) in enumerate(poly):
-      poly[pt_idx] = (x-base_x, y-base_y, z)
-    self.poly = poly
+    self.poly = [(x-base_x, y-base_y) for x,y,z in poly]
 
     # split the lane polygon into two boundaries
     self.left_bnd = []  # ([x1,x2,...], [y1,y2,...])
@@ -83,10 +82,6 @@ class Lane:
     self.overlapped = set()
     self.reducing = False
     self.growning = False
-
-  def poly_pts(self):
-    for x,y,z in self.poly:
-      yield x,y
 
   def recut_bnd(self, base_pt, heading, start_or_end):
     #if self.road_id in ("557024172,0,0,66", "557024172,0,0,67", "557024172,0,0,17", "557024172,0,0,37", "557024172,0,0,52", "557024172,0,0,63"):
@@ -160,10 +155,20 @@ class Lane:
       self.right_bnd_to_recut = xxyy2xyxy(right1_pts) + [(right_sep_pt.x, right_sep_pt.y)]
     
     return []
-    
+
+  def update_poly(self):
+    self.poly = xxyy2xyxy(self.left_bnd) + list(reversed(xxyy2xyxy(self.right_bnd)))
 
 
   def debug_print(self, prefix=""):
+    # if self.full_id in ("557024172,0,0,36,0"):
+    #   print(f"{prefix}Lane[{self.full_id}]")
+    #   print(prefix, "right bnd end point:   %.4f, %.4f" % (self.right_bnd[0][-1], self.right_bnd[1][-1]))
+    # if self.full_id in ("557024172,0,0,37,0"):
+    #   print(f"{prefix}Lane[{self.full_id}]")
+    #   print(prefix,"right bnd start point: %.4f, %.4f" % (self.right_bnd[0][0], self.right_bnd[1][0]))
+    # return
+
     print(f"{prefix}Lane[{self.id}]", end="")
     print(f"\tleft:{[lane.id for lane in self.left_neighbors]},", end="")
     print(f"\tright:{[lane.id for lane in self.right_neighbors]},", end="")
@@ -207,14 +212,15 @@ class Road:
     else:
       #pts = xodr_exporter.resample_linear(pts, d)
       pts = xodr_exporter.resample_cubic(pts, self.heading[0], self.heading[1], d)
-      # line1 = []
-      # line2 = []
-      # dd = math.pi / 2
-      # for d in range(10):
-      #   line1.append((pts[0][0] + d * math.cos(self.heading[0] - dd), pts[0][1] + d * math.sin(self.heading[0] - dd)))
-      # for d in range(10):
-      #   line2.append((pts[-1][0] + d * math.cos(self.heading[1] - dd), pts[-1][1] + d * math.sin(self.heading[1] - dd)))
-      # pts = list(reversed(line1)) + pts + line2
+      if 0: # show heading normals at tip of reference lines
+        line1 = []
+        line2 = []
+        dd = math.pi / 2
+        for d in range(30):
+          line1.append((pts[0][0] + d * math.cos(self.heading[0] - dd), pts[0][1] + d * math.sin(self.heading[0] - dd)))
+        for d in range(10):
+          line2.append((pts[-1][0] + d * math.cos(self.heading[1] - dd), pts[-1][1] + d * math.sin(self.heading[1] - dd)))
+        pts = list(reversed(line1)) + pts + line2
 
     xx = [x for x, y in pts]
     yy = [y for x, y in pts]
@@ -230,6 +236,11 @@ class Road:
 
   def debug_print(self):
     print(f"Road[{self.id}]")
+    # print(f"\theading: {math.degrees(self.heading[0])}\t{math.degrees(self.heading[1])}")
+    # h1 = math.atan2(self.ref_line[1][1]-self.ref_line[1][0], self.ref_line[0][1]-self.ref_line[0][0])
+    # h2 = math.atan2(self.ref_line[1][-1]-self.ref_line[1][-2], self.ref_line[0][-1]-self.ref_line[0][-2])
+    # print(f"\theading2:{math.degrees(h1)}\t{math.degrees(h2)}")
+
     for lane_id, lane in self.lanes.items():
       lane.debug_print("\t")
 
@@ -259,6 +270,7 @@ def update_neighbor(lane1, lane2):
 class RoadNetwork:
   def __init__(self):
     self.roads = OrderedDict()
+    self.debug_pts = []
 
   def add_road(self, road_id):
     self.roads[road_id] = Road(road_id)
@@ -274,7 +286,7 @@ class RoadNetwork:
     # build pt hash
     for road_id, road in self.roads.items():
       for lane_id, lane in road.lanes.items():
-        for pt in lane.poly_pts():
+        for pt in lane.poly:
           pt_str = pt_hash(pt[0], pt[1])
           if pt_str not in self.pt2lane:
             self.pt2lane[pt_str] = set()
@@ -282,14 +294,12 @@ class RoadNetwork:
 
     for road_id, road in self.roads.items():
       for lane_id, lane in road.lanes.items():
-        xx = [x for x,y,z in lane.poly]
-        yy = [y for x,y,z in lane.poly]
+        xx, yy = xyxy2xxyy(lane.poly)
 
         # split poly ring on the point shared by other road
-        poly_pts = list(lane.poly_pts())
         split_pt_indices = []
-        for idx, pt in enumerate(poly_pts):
-          if idx == 0 or idx + 2 >= len(poly_pts):
+        for idx, pt in enumerate(lane.poly):
+          if idx == 0 or idx + 2 >= len(lane.poly):
             continue
           for lane2 in self.pt_lane_set(pt[0], pt[1]):
             if lane2.road_id != road_id:
@@ -417,16 +427,16 @@ class RoadNetwork:
         continue
       for road, start_or_end in seps:
         roads_to_recut_bnd[road] = (True, True)
-    for road, (cut_start, cut_end) in roads_to_recut_bnd.items():
-      for lane_id, lane in road.lanes.items():
-        if len(lane.predecessors) > 1:
-          cut_start = False
-          break
-      for lane_id, lane in road.lanes.items():
-        if len(lane.successors) > 1:
-          cut_end = False
-          break
-      roads_to_recut_bnd[road] = (cut_start, cut_end)
+    # for road, (cut_start, cut_end) in roads_to_recut_bnd.items():
+    #   for lane_id, lane in road.lanes.items():
+    #     if len(lane.predecessors) > 1:
+    #       cut_start = False
+    #       break
+    #   for lane_id, lane in road.lanes.items():
+    #     if len(lane.successors) > 1:
+    #       cut_end = False
+    #       break
+    #   roads_to_recut_bnd[road] = (cut_start, cut_end)
 
     # extend lane boundaries
     for road, (cut_start, cut_end) in roads_to_recut_bnd.items():
@@ -581,6 +591,9 @@ class RoadNetwork:
             heading = road.heading[0 if start_or_end == "start" else 1]
       for road, start_or_end in seps:
         idx = 0 if start_or_end == "start" else 1
+        # if road.id == "557024172,0,0,36" and start_or_end == "end":
+        #   print("old road end heading: ", math.degrees(road.heading[idx]))
+        #   print("new road end heading: ", math.degrees(heading))
         road.heading[idx] = heading
       sep_set[sep_set_id] = [heading, None]
 
@@ -616,7 +629,26 @@ class RoadNetwork:
             base_pt2 = (road.ref_line[0][pt_idx], road.ref_line[1][pt_idx])
         base_pts.append(((base_pt1[0]+base_pt2[0])/2, (base_pt1[1]+base_pt2[1])/2))
 
-      sep_set[sep_set_id][1] = base_pts
+      if len(base_pts) != 1:
+        # for overlapped mergming lanes,
+        # we usually find 2 or more shared start/end points among roads
+        # draw the separation line along the first 2 points.
+        heading = math.atan2(base_pts[0][1]-base_pts[1][1], base_pts[0][0]-base_pts[1][0])
+        heading += math.pi/2
+        for road, start_or_end in seps:
+          if start_or_end == "start":
+            heading2 = math.atan2(road.ref_line[1][1]-road.ref_line[1][0], road.ref_line[0][1]-road.ref_line[0][0])
+            if math.cos(heading)*math.cos(heading2)+math.sin(heading)*math.sin(heading) < 0.5:
+             heading += math.pi
+            for road2, start_or_end in seps:
+              if start_or_end == "start":
+                road2.heading[0] = heading
+              else:
+                road2.heading[1] = heading
+            sep_set[sep_set_id] = [heading, [base_pts[0]]]
+            break
+      else:
+        sep_set[sep_set_id][1] = base_pts
       #self.debug_pts += base_pts
       print(f"{sep_set_id.v}: {seps}")
       print("\t", base_pts)
@@ -625,6 +657,12 @@ class RoadNetwork:
     # tweak terminals of lane boundaries
     self.prepare_for_bnd_recut(sep_set)
     self.recut_bnd(sep_set)
+  
+    # update lane poly after boundaries updated
+    for road_id, road in self.roads.items():
+      for lane_id, lane in road.lanes.items():
+        lane.update_poly()
+
 
   def build_lane_info(self):
     for road_id, road in self.roads.items():
@@ -635,16 +673,19 @@ class RoadNetwork:
       road.build_ref_line()
       road.resample_ref_line(5.0)
       road.compute_ref_line_bc_derivative()
+    #return
     self.refine_lane_terminals()
     # rebuild reference line with refined lane boundaries
     for road_id, road in self.roads.items():
       road.backup_ref_line()
       road.build_ref_line()
-      road.resample_ref_line(10.0)
-      road.resample_ref_line(0.1, "cubic")
+      road.resample_ref_line(3.0)
+      road.resample_ref_line(0.01, "cubic")
 
   def debug_print(self):
     for road_id, road in self.roads.items():
+      # if road_id not in ("557024172,0,0,36"):
+      #   continue
       road.debug_print()
 
 
@@ -745,17 +786,15 @@ def run(focused_set2=set()):
     my_map.roads[road_id].add_lane(Lane(lane_id, lane_subid, f["geometry"]["coordinates"]))
 
   my_map.build_lane_info()
-  #my_map.debug_print()
+  my_map.debug_print()
 
   # draw lane polygon
   color_idx = 0
   for road_id, road in my_map.roads.items():
     for lane_subid, lane in road.lanes.items():
-      lane_poly = lane.poly
-      xx = [x for x,y,z in lane_poly]
-      yy = [y for x,y,z in lane_poly]
+      xxyy = xyxy2xxyy(lane.poly)
 
-      poly = Polygon(np.column_stack([xx, yy]), animated=True, color = (0,0,0,0))
+      poly = Polygon(np.column_stack(xxyy), animated=True, color = (0,0,0,0))
       ax.add_patch(poly)
       poly.lane_id = (road_id, lane_subid)
       polys.append(poly)
@@ -774,8 +813,8 @@ def run(focused_set2=set()):
       p.my_color = (c[0], c[1], c[2], 0.3)
       p.my_color2 = (c[0], c[1], c[2], 0.6)
 
-      polys2.append(sgeom.Polygon([(x,y) for x,y,z in lane_poly]))
-      update_world_box(xx, yy)
+      polys2.append(sgeom.Polygon(lane.poly))
+      update_world_box(*xxyy)
 
   # for road_id, road in my_map.roads.items():
   #   if road_id not in ('557024172,0,0,42', '557024172,0,0,66', '557024172,0,0,36', '557024172,0,0,16'):
@@ -789,15 +828,18 @@ def run(focused_set2=set()):
 
   # draw reference lines
   for road_id, road in my_map.roads.items():
+    # if road_id not in ("557024172,0,0,36", "557024172,0,0,53"):
+    #   continue
+    
     plt.plot(road.ref_line[0], road.ref_line[1], "-*")
-    plt.plot(road.old_ref_line[0], road.old_ref_line[1], "-x")
+    #plt.plot(road.old_ref_line[0], road.old_ref_line[1], "-x")
     #bc_pts = xodr_exporter.compute_bc_derivative(road)
     #plt.plot([x for x,y in bc_pts], [y for x,y in bc_pts], "x")
 
   # draw debug points
   for polyline in my_map.debug_pts:
     xyxy = xyxy2xxyy(polyline)
-    plt.plot(xyxy[0], xyxy[1], "-o")
+    plt.plot(xyxy[0], xyxy[1], "-o", markersize=10)
 
   # draw center lines
   for f in g["features"]:
@@ -818,8 +860,10 @@ def run(focused_set2=set()):
       plt.plot(xx, yy, "--")
 
   # keep aspect ratio to 1:1 in meters
-  w = 497
-  h = 370
+  if os.name == 'nt':
+    w, h = 1000, 500
+  else:
+    w, h = 1600, 800
   dx = x_max - x_min
   dy = y_max - y_min
   if dx/dy > w/h:
@@ -849,8 +893,7 @@ def run(focused_set2=set()):
   plt.connect('key_press_event', toggle_selector)
 
   mng = plt.get_current_fig_manager()
-  #mng.window.showMaximized()
-  #mng.window.setGeometry(0,0,w,h)
+  mng.resize(w, h)
 
   plt.show()
   return focused_set
