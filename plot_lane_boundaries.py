@@ -52,20 +52,22 @@ class Separator:
 class Junction:
   def __init__(self, id):
     self.id = id
-    self.set_id = id
     self.connecting_roads = []
 
   def add_connecting_road(self, road):
     self.connecting_roads.append(road)
 
   def debug_print(self):
-    print(f"Junction [{self.id}]")
+    print(f"Junction [{self.set_id()}]")
     print(f"\tConnecting Roads:")
     for road in self.connecting_roads:
       print((f"\t\t[{road.id[6:]}]"))
 
+  def set_id(self):
+    return "|".join(sorted([str(j.short_id) for j in self.connecting_roads]))
+
   def __repr__(self):
-    return f"Junction[{self.id}]"
+    return f"Junction[{self.set_id()}]"
 
 
 class Lane:
@@ -760,26 +762,46 @@ class RoadNetwork:
     self.recut_bnd(seps)
     return seps
 
+  def update_or_create_junction(self, connecting_roads, this_junction = None):
+    if this_junction is None:
+      for i, connecting_road in enumerate(connecting_roads):
+        if connecting_road.junction is not None:
+          this_junction = connecting_road.junction
+          break
+    if this_junction is None:
+      this_junction = Junction(self.generate_extra_junction_id())
+      self.default_junctions.append(this_junction)
+    for connecting_road in connecting_roads:
+      if this_junction == connecting_road.junction:
+        continue
+      if connecting_road.junction is None:
+        this_junction.add_connecting_road(connecting_road)
+        connecting_road.junction = this_junction
+      else:
+        # Merge with existing junctions
+        for road in connecting_road.junction.connecting_roads:
+          road.junction = this_junction
+          this_junction.add_connecting_road(road)
+        self.default_junctions.remove(connecting_road.junction)
+    return this_junction
+
   def build_default_junctions(self, seps):
-    # From overlapped roads
     for sep in seps:
-      if len(sep.terminals) > 2:
+      if sep.road_split_from is not None:
+        # From spliting roads
+        roads = [road for road, start_or_end in sep.terminals if road != sep.road_split_from]
+        sep.junction = self.update_or_create_junction(roads)
+      elif sep.road_merged_to is not None:
+        # From merging roads
+        roads = [road for road, start_or_end in sep.terminals if road != sep.road_merged_to]
+        sep.junction = self.update_or_create_junction(roads)
+      elif len(sep.terminals) > 2:
+        # From overlapped roads
         for road, start_or_end in sep.terminals:
-          if road.overlapped_roads:
-            if road.junction is not None:
-              sep.junction = road.junction
-              continue
-            # TODO: handle more than 2 lanes overlapped
-            overlapped_road = first(road.overlapped_roads)
-            # Select a junction id
-            junction_id = str(road.short_id if road.short_id < overlapped_road.short_id else overlapped_road.short_id)
-            this_junction = Junction(junction_id)
-            this_junction.add_connecting_road(road)
-            this_junction.add_connecting_road(overlapped_road)
-            road.junction = this_junction
-            overlapped_road.junction = this_junction
-            self.default_junctions.append(this_junction)
-            sep.junction = this_junction
+          if len(road.overlapped_roads) > 0:
+            junction = sep.junction if sep.junction is not None else road.junction
+            roads = [road_b for road_b, start_or_end_b in sep.terminals if start_or_end == start_or_end_b]
+            sep.junction = self.update_or_create_junction(roads, this_junction = junction)
 
   def connecting_road_routes(self, lane, base_route=[]):
     # Compute all routes of connecting roads recursively
@@ -868,7 +890,6 @@ class RoadNetwork:
               continue
             routes += self.connecting_road_routes(lane)
       new_junction = Junction(self.generate_extra_junction_id())
-      new_junction.set_id = "|".join([str(j.id) for j in junctions_to_merge])
       for route in routes:
         #print([lane.full_id[14:] for lane in route])
         extra_road_id = self.generate_extra_road_id()
@@ -881,7 +902,8 @@ class RoadNetwork:
 
       self.default_junctions.append(new_junction)
       for j in junctions_to_merge:
-        self.default_junctions.remove(j)
+        if j in self.default_junctions:
+          self.default_junctions.remove(j)
         for road in j.connecting_roads:
           del self.roads[road.id]
 
@@ -989,16 +1011,6 @@ class RoadNetwork:
               road_b.linkage[pt_b_idx].add((junction_id, "junction"))
               print(f"Link: Road [{road_b.id[6:]}] {start_or_end_b} and Junction [{junction_id}]")
   
-  def save_direct_junction_info(self, seps):
-    self.direct_junction_info = []
-    for sep in seps:
-      if sep.road_split_from is None and sep.road_merged_to is None:
-        continue
-      is_for_default_junction = np.any([(road.junction is not None) for road, start_or_end in sep.terminals])
-      if is_for_default_junction:
-        continue
-      self.direct_junction_info.append(sep)
-
   def build_lane_info(self, preview):
     for road_id, road in self.roads.items():
       road.sort_lanes()
@@ -1026,12 +1038,11 @@ class RoadNetwork:
 
     # Junctions
     self.build_default_junctions(seps)
-    #self.print_separators(seps)
+    self.print_separators(seps)
     self.merge_junctions(seps)
-    # print("################################")
-    # self.print_separators(seps)
-    # print("################################")
-    self.save_direct_junction_info(seps)
+    print("################################")
+    self.print_separators(seps)
+    print("################################")
 
     # Road Links
     self.build_road_connections(seps)
@@ -1046,7 +1057,7 @@ class RoadNetwork:
       road.backup_ref_line()
       road.build_ref_line()
       road.resample_ref_line(3.0)
-      road.resample_ref_line(0.01, "cubic")
+      road.resample_ref_line(0.1, "cubic")
 
   def debug_print(self):
     for road_id, road in self.roads.items():
@@ -1223,8 +1234,8 @@ def run(geojson_file, focused_set2=set(), preview=True):
 
 
 if __name__ == '__main__':
-  georef = "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"
-  geojson_file = "0eca7058-c239-41f3-9f06-8a1243fa2063.json"
+  # georef = "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"
+  # geojson_file = "0eca7058-c239-41f3-9f06-8a1243fa2063.json"
 
   # georef = "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"
   # geojson_file = "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json"
@@ -1232,8 +1243,8 @@ if __name__ == '__main__':
   # georef = "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"
   # geojson_file = "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json"
 
-  # georef = "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"
-  # geojson_file = "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json"
+  georef = "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"
+  geojson_file = "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json"
 
   focused_set = run(geojson_file, preview=True)
   #focused_set = {'557024172,0,0,52,2', '557024172,0,0,42,1', '557024172,0,0,42,3', '557024172,0,0,66,2', '557024172,0,0,52,0', '557024172,0,0,42,4', '557024172,0,0,16,1', '557024172,0,0,63,0', '557024172,0,0,16,4', '557024172,0,0,67,0', '557024172,0,0,53,2', '557024172,0,0,52,3', '557024172,0,0,67,5', '557024172,0,0,66,4', '557024172,0,0,67,4', '557024172,0,0,63,2', '557024172,0,0,42,2', '557024172,0,0,66,5', '557024172,0,0,53,1', '557024172,0,0,42,0', '557024172,0,0,16,0', '557024172,0,0,17,0', '557024172,0,0,67,1', '557024172,0,0,66,1', '557024172,0,0,17,3', '557024172,0,0,17,2', '557024172,0,0,52,1', '557024172,0,0,37,1', '557024172,0,0,63,4', '557024172,0,0,53,0', '557024172,0,0,53,3', '557024172,0,0,16,2', '557024172,0,0,67,3', '557024172,0,0,36,1', '557024172,0,0,66,3', '557024172,0,0,63,1', '557024172,0,0,16,3', '557024172,0,0,63,3', '557024172,0,0,17,1', '557024172,0,0,67,2', '557024172,0,0,37,0', '557024172,0,0,66,0', '557024172,0,0,36,2', '557024172,0,0,36,0', '557024172,0,0,63,5'}
@@ -1241,10 +1252,12 @@ if __name__ == '__main__':
   #focused_set = {'557024172,0,0,19,3', '557024172,0,0,19,1', '557024173,0,0,2,3', '557024173,0,0,4,1', '557024173,0,0,7,3', '557024172,0,0,46,2', '557024172,0,0,12,3', '557024172,0,0,43,2', '557024173,0,0,5,0', '557024173,0,0,2,1', '557024173,0,0,3,4', '557024172,0,0,20,3', '557024172,0,0,74,1', '557024173,0,0,6,3', '557024172,0,0,20,2', '557024173,0,0,6,2', '557024173,0,0,2,0', '557024173,0,0,3,2', '557024173,0,0,8,3', '557024172,0,0,43,0', '557024172,0,0,20,4', '557024173,0,0,9,3', '557024173,0,0,2,2', '557024173,0,0,6,0', '557024173,0,0,8,0', '557024172,0,0,12,1', '557024172,0,0,20,1', '557024172,0,0,43,1', '557024172,0,0,49,0', '557024172,0,0,20,0', '557024172,0,0,74,0', '557024172,0,0,12,0', '557024173,0,0,8,2', '557024173,0,0,8,4', '557024173,0,0,7,4', '557024173,0,0,4,3', '557024173,0,0,5,2', '557024173,0,0,2,4', '557024172,0,0,19,2', '557024173,0,0,6,1', '557024173,0,0,9,1', '557024173,0,0,8,1', '557024172,0,0,46,1', '557024173,0,0,4,0', '557024173,0,0,7,0', '557024172,0,0,49,1', '557024173,0,0,3,0', '557024173,0,0,9,0', '557024172,0,0,19,0', '557024172,0,0,12,4', '557024173,0,0,8,5', '557024173,0,0,7,2', '557024172,0,0,44,0', '557024172,0,0,44,1', '557024172,0,0,12,2', '557024173,0,0,9,2', '557024172,0,0,46,0', '557024173,0,0,4,2', '557024173,0,0,3,3', '557024172,0,0,74,3', '557024172,0,0,74,4', '557024172,0,0,49,3', '557024173,0,0,7,1', '557024173,0,0,5,1', '557024173,0,0,8,6', '557024173,0,0,3,1', '557024173,0,0,7,5', '557024172,0,0,49,2', '557024172,0,0,74,2', '557024173,0,0,6,4'}
   #focused_set = {'557024174,0,0,17,3', '557024174,0,0,15,0', '557024174,0,0,14,2', '557024174,0,0,14,1', '557024174,0,0,13,1', '557024174,0,0,17,0', '557024172,0,0,46,1', '557024174,0,0,18,0', '557024172,0,0,29,0', '557024172,0,0,29,3', '557024172,0,0,46,2', '557024174,0,0,17,2', '557024174,0,0,20,1', '557024172,0,0,29,1', '557024174,0,0,19,0', '557024174,0,0,17,1', '557024174,0,0,19,1', '557024174,0,0,13,2', '557024174,0,0,14,0', '557024174,0,0,20,3', '557024174,0,0,16,0', '557024174,0,0,18,1', '557024172,0,0,29,2', '557024174,0,0,18,2', '557024172,0,0,46,0', '557024174,0,0,19,2', '557024174,0,0,20,2', '557024174,0,0,20,0', '557024174,0,0,13,3', '557024174,0,0,16,1', '557024174,0,0,15,1', '557024174,0,0,13,0'}
   #focused_set = {'557024172,0,0,38,1', '557024172,0,0,26,1', '557024172,0,0,30,1', '557024172,0,0,38,2', '557024172,0,0,26,3', '557024172,0,0,29,2', '557024172,0,0,27,2', '557024172,0,0,28,1', '557024172,0,0,28,2', '557024172,0,0,29,1', '557024172,0,0,26,2', '557024172,0,0,30,0', '557024172,0,0,27,1'}
+  #focused_set = {'557024172,0,0,71,1', '557024172,0,0,55,1', '557024172,0,0,70,2', '557024172,0,0,71,2', '557024172,0,0,70,1', '557024172,0,0,56,2', '557024172,0,0,56,1', '557024172,0,0,40,0', '557024172,0,0,55,2'}
+  #focused_set = {'557024172,0,0,56,2', '557024172,0,0,49,2', '557024172,0,0,56,1', '557024172,0,0,55,1', '557024172,0,0,38,1', '557024172,0,0,71,2', '557024172,0,0,71,1', '557024172,0,0,49,1', '557024172,0,0,55,2', '557024172,0,0,38,2', '557024172,0,0,50,2', '557024172,0,0,50,1', '557024172,0,0,70,1', '557024172,0,0,70,2', '557024172,0,0,40,0'}
 
   #focused_set = {'557392309,0,0,16,2', '557392309,0,0,15,1', '557392309,0,0,45,1', '557392309,0,0,16,1', '557392309,0,0,29,1', '557392309,0,0,34,2', '557392309,0,0,27,2', '557392309,0,0,38,1', '557392309,0,0,47,0', '557392309,0,0,27,1', '557392309,0,0,47,1', '557392309,0,0,17,0', '557392309,0,0,37,1', '557392309,0,0,71,1', '557392309,0,0,34,1', '557392309,0,0,27,3', '557392309,0,0,15,3', '557392309,0,0,28,1', '557392309,0,0,79,1', '557392309,0,0,41,1', '557392309,0,0,33,1', '557392308,0,0,7,1', '557392309,0,0,29,3', '557392309,0,0,67,1', '557392309,0,0,39,1', '557392309,0,0,43,1', '557392309,0,0,35,1', '557392309,0,0,55,1', '557392309,0,0,29,2', '557392309,0,0,15,2', '557392309,0,0,33,0', '557392309,0,0,68,2', '557392309,0,0,55,2', '557392309,0,0,36,1', '557392309,0,0,51,1', '557392309,0,0,68,1', '557392309,0,0,14,1', '557392309,0,0,37,0', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,28,2'}
-  #focused_set = {'557392309,0,0,34,1', '557392309,0,0,27,2', '557392308,0,0,7,1', '557392309,0,0,67,1', '557392309,0,0,33,1', '557392309,0,0,33,0', '557392309,0,0,27,1', '557392309,0,0,79,1', '557392309,0,0,35,1', '557392309,0,0,28,1', '557392309,0,0,28,2', '557392309,0,0,27,3', '557392309,0,0,34,2'}
-
+  #focused_set = {'557024172,0,0,71,2', '557024172,0,0,56,1', '557024172,0,0,50,1', '557024172,0,0,49,2', '557024172,0,0,38,2', '557024172,0,0,70,2', '557024172,0,0,40,0', '557024172,0,0,56,2', '557024172,0,0,55,2', '557024172,0,0,55,1', '557024172,0,0,50,2', '557024172,0,0,71,1', '557024172,0,0,38,1', '557024172,0,0,70,1', '557024172,0,0,49,1'}
+  #focused_set = {'557392309,0,0,47,0', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,15,3', '557392309,0,0,14,2', '557392309,0,0,43,1', '557392309,0,0,47,1', '557392309,0,0,14,1', '557392309,0,0,15,1', '557392309,0,0,44,1', '557392309,0,0,68,1', '557392309,0,0,15,2'}
   if focused_set:
     print(focused_set)
     ret = run(geojson_file, focused_set, preview=False)

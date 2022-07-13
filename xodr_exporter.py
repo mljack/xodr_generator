@@ -173,38 +173,8 @@ def export_road_linkage(odr, road_a):
                 if to_junction or successor.road in road_set:
                     lane.xodr.add_link("successor", successor.xodr.lane_id)
 
-def export_direct_junction(odr, sep):
-    if sep.road_split_from is not None:
-        creator = xodr.DirectJunctionCreator(sep.road_split_from.short_id, f'direct_junction_{sep.road_split_from.id}')
-        for road, start_or_end in sep.terminals:
-            if road is sep.road_split_from:
-                continue
-            src_lane_ids = []
-            dst_lane_ids = []
-            for lane_id, lane in road.lanes.items():
-                for prev_lane in lane.predecessors:
-                    if prev_lane.road is sep.road_split_from:
-                        src_lane_ids.append(prev_lane.xodr.lane_id)
-                        dst_lane_ids.append(lane.xodr.lane_id)
-            creator.add_connection(prev_lane.road.xodr, lane.road.xodr, src_lane_ids, dst_lane_ids)
-        odr.add_junction_creator(creator)
-    if sep.road_merged_to is not None:
-        creator = xodr.DirectJunctionCreator(sep.road_merged_to.short_id, f'direct_junction_{sep.road_merged_to.id}')
-        for road, start_or_end in sep.terminals:
-            if road is sep.road_merged_to:
-                continue
-            src_lane_ids = []
-            dst_lane_ids = []
-            for lane_id, lane in road.lanes.items():
-                for next_lane in lane.successors:
-                    if next_lane.road is sep.road_merged_to:
-                        src_lane_ids.append(lane.xodr.lane_id)
-                        dst_lane_ids.append(next_lane.xodr.lane_id)
-            creator.add_connection(lane.road.xodr, next_lane.road.xodr, src_lane_ids, dst_lane_ids)
-        odr.add_junction_creator(creator)
-
 def export_default_junction(odr, junction):
-    j = xodr.Junction(junction.set_id, junction.id)
+    j = xodr.Junction(junction.set_id(), junction.id)
     connections = OrderedDict()
     for road in junction.connecting_roads:
         for lane in road.lanes.values():
@@ -222,9 +192,9 @@ def export_default_junction(odr, junction):
 
 def export(xodr_filename, my_map, offset_x, offset_y, map_ver, georef):
     odr = xodr.OpenDrive(xodr_filename.replace(".json", ""))
-    odr.add_offset(offset_x, offset_y, 0.0)
-    odr.add_user_data("inceptioMapVersion", map_ver)
-    odr.add_user_data("inceptioMapGeoRef", georef)
+    #odr.add_offset(offset_x, offset_y, 0.0)
+    #odr.add_user_data("inceptioMapVersion", map_ver)
+    #odr.add_user_data("inceptioMapGeoRef", georef)
 
     for road_id, road in my_map.roads.items():
         print(f"Exporting Road[{road_id}]...")
@@ -234,12 +204,8 @@ def export(xodr_filename, my_map, offset_x, offset_y, map_ver, georef):
         print(f"Exporting Linkages of Road[{road_id}]...")
         export_road_linkage(odr, road)
 
-    for sep in my_map.direct_junction_info:
-        print(f"Exporting Direct Junction[{sep}]...")
-        export_direct_junction(odr, sep)
-
     for junction in my_map.default_junctions:
-        print(f"Exporting Default Junction[{junction.set_id}]...")
+        print(f"Exporting Default Junction[{junction.set_id()}]...")
         export_default_junction(odr, junction)
 
     print("Write the OpenDRIVE file...")
