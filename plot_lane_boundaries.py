@@ -137,6 +137,8 @@ class Lane:
         self.overlapped.add(lane)
         lane.overlapped.add(self)
         to_del.append(lane)
+      elif self.road.original_id == lane.road.original_id:
+        to_del.append(lane)
     for lane in to_del:
       self.predecessors.remove(lane)
 
@@ -146,6 +148,8 @@ class Lane:
       if self.road_id == lane.road_id:
         self.overlapped.add(lane)
         lane.overlapped.add(self)
+        to_del.append(lane)
+      elif self.road.original_id == lane.road.original_id:
         to_del.append(lane)
     for lane in to_del:
       self.successors.remove(lane)
@@ -288,37 +292,69 @@ class Road:
     h2 = math.atan2(self.ref_line[1][-1]-self.ref_line[1][-2], self.ref_line[0][-1]-self.ref_line[0][-2])
     self.heading = [h1, h2]
 
-  def split_road_with_overlapped_lanes(self, lanes_overlapped, use_new_ref_line):
-    #print(f"Road[{self.id[6:]}: {[lane.full_id[6:] for lane in lanes_overlapped]}]")
-    assert(len(lanes_overlapped) == 2)
-    new_road = None
+  def split_road_with_overlapped_lanes(self, lanes_overlapped):
+    new_roads = []
     lanes = list(self.lanes.values())
-    for idx, lane in enumerate(lanes):
-      if lane == lanes_overlapped[1]:
+    lane_idx_base = 0
+    for overlapped_idx, overlapped_lane in enumerate(lanes_overlapped):
+      for lane_idx in range(lane_idx_base, len(lanes)):
+        lane = lanes[lane_idx]
+        if lane != overlapped_lane:
+          continue
+        lane_idx_base = lane_idx + 1
+
+        # Reuse old road for the first overlapped road
+        if overlapped_idx == 0:
+          continue
+
         # Generate new road id
         # 557024174,0,0,20 => 557024174,0,0,10020
+        # 557024174,0,0,20 => 557024174,0,0,20020
         p = self.id.rfind(",")
-        new_road_id = self.id[:p+1] + str(int(self.id[p+1:]) + 10000)
+        new_road_id = self.id[:p+1] + str(int(self.id[p+1:]) + 10000*overlapped_idx)
         new_road = Road(new_road_id)
         new_road.original_id = self.id
-        for j in range(idx, len(lanes)):
-          if j == idx and not use_new_ref_line:
-            # Use old ref line and lane offset if road are not split.
-            fake_lane = Lane(new_road_id + ",-1", "-1", "FAKE")
-            fake_lane.left_bnd = first(lanes_overlapped[0].road.lanes.values()).left_bnd
-            fake_lane.right_bnd = lanes_overlapped[1].left_bnd
-            fake_lane.update_poly()
-            fake_lane.road = new_road
-            new_road.add_lane(fake_lane)
-          lanes[j].road = new_road
-          new_road.add_lane(lanes[j])
+
+        # Use old ref line and lane offset if road are not split.
+        for lane_k in lanes:
+          prev_road_set = set([prev.road.original_id for prev in overlapped_lane.predecessors])
+          next_road_set = set([next.road.original_id for next in overlapped_lane.successors])
+          prev_road_set |= set([prev.road.original_id for prev in lane_k.predecessors])
+          next_road_set |= set([next.road.original_id for next in lane_k.successors])
+          use_this_ref_line = len(prev_road_set) == 1 and len(next_road_set) == 1
+          if use_this_ref_line:
+            if lane_k != overlapped_lane:
+              fake_lane = Lane(new_road_id + ",-1", "-1", "FAKE")
+              fake_lane.left_bnd = lane_k.left_bnd
+              fake_lane.right_bnd = overlapped_lane.left_bnd
+              fake_lane.update_poly()
+              fake_lane.road = new_road
+              new_road.add_lane(fake_lane)
+            break
+
+        # Add overlapped lane to the road
+        overlapped_lane.road = new_road
+        new_road.add_lane(overlapped_lane)
+
+        # Add non-overlapping lane to the road
+        for j in range(lane_idx+1, len(lanes)):
+          if len(lanes[j].overlapped) == 0:
+            lanes[j].road = new_road
+            new_road.add_lane(lanes[j])
+            lane_idx_base = j + 1
+          else:
+            break
         self.overlapped_roads.add(new_road)
         new_road.overlapped_roads.add(self)
-        break
-    for lane_id in new_road.lanes:
-      if not new_road.lanes[lane_id].is_fake():
-        del self.lanes[lane_id]
-    return new_road
+        new_roads.append(new_road)
+    
+    # Remove lanes from original road
+    for new_road in new_roads:
+      for lane_id in new_road.lanes:
+        if not new_road.lanes[lane_id].is_fake():
+          del self.lanes[lane_id]
+
+    return new_roads
 
   def __repr__(self):
     return f"Road[{self.id[6:]}]"
@@ -477,17 +513,11 @@ class RoadNetwork:
     new_roads = []
     for road_id, road in self.roads.items():
       lanes_overlapped = []
-      prev_road_set = set()
-      next_road_set = set()
       for lane_id, lane in road.lanes.items():
         if len(lane.overlapped) > 0:
           lanes_overlapped.append(lane)
-          prev_road_set |= set([prev.road.original_id for prev in lane.predecessors])
-          next_road_set |= set([next.road.original_id for next in lane.successors])
       if len(lanes_overlapped) > 0:
-        use_new_ref_line = len(prev_road_set) > 1 or len(next_road_set) > 1
-        new_road = road.split_road_with_overlapped_lanes(lanes_overlapped, use_new_ref_line)
-        new_roads.append(new_road)
+        new_roads += road.split_road_with_overlapped_lanes(lanes_overlapped)
     for new_road in new_roads:
       self.add_road(new_road)
     return len(new_roads) > 0
@@ -934,19 +964,21 @@ class RoadNetwork:
       if new_terminals is None:
         continue
       if start_or_end == "start":
-        assert(len(road.predecessor_roads) == 1)
-        prev_road = first(road.predecessor_roads)
-        if road in prev_road.successor_roads:
-          prev_road.successor_roads.remove(road)
-          for t in new_terminals:
-            prev_road.successor_roads.add(t[0])
+        assert(len(road.predecessor_roads) <= 1)
+        if len(road.predecessor_roads) == 1:
+          prev_road = first(road.predecessor_roads)
+          if road in prev_road.successor_roads:
+            prev_road.successor_roads.remove(road)
+            for t in new_terminals:
+              prev_road.successor_roads.add(t[0])
       else: # "end"
-        assert(len(road.successor_roads) == 1)
-        next_road = first(road.successor_roads)
-        if road in next_road.predecessor_roads:
-          next_road.predecessor_roads.remove(road)
-          for t in new_terminals:
-            next_road.predecessor_roads.add(t[0])
+        assert(len(road.successor_roads) <= 1)
+        if len(road.successor_roads) == 1:
+          next_road = first(road.successor_roads)
+          if road in next_road.predecessor_roads:
+            next_road.predecessor_roads.remove(road)
+            for t in new_terminals:
+              next_road.predecessor_roads.add(t[0])
 
     # Replace merged lanes with new connecting lanes in predecessor/successor
     for (lane, start_or_end), new_terminals in lane_map.items():
@@ -1115,7 +1147,7 @@ def on_pick(event):
   if event.mouseevent.key != 'control' or event.mouseevent.button != 1:
     return
   polygon_item.PolygonInteractor.picked = event.artist
-  print(f"Lane[{event.artist.lane.full_id}] {event.artist.lane.type} got picked.")
+  print(f"Lane[{event.artist.lane.full_id}] {event.artist.lane.type} Road[{event.artist.lane.road.id}] got picked.")
   fig.canvas.draw()
   fig.canvas.flush_events()
 
@@ -1235,20 +1267,24 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
   return focused_set
 
 geojson_files = [
-  # ("0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
-  # ("94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
-  # ("ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"),
-  # ("e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"),
+  #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
+  #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
+  #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
+  #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"),
 
-  #("d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # assert(len(lanes_overlapped) == 2)
-  #("3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # 806010035, 806000036, 806000037
-  #("75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
-  #("dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035     806000036   806000037
-  #("099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # lane shape
-  ("8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # lane shape
-  #("e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027
+  ("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
+  #("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # 806010035, 806000036, 806000037
+  #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  #("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # lane shape # ref line cut
+  #("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # lane shape # ref line cut
+  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
+
+# case E, 4 overlapped lanes
+focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
+
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,35,3', '557371806,0,0,44,2', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,35,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,35,2', '557371806,0,0,36,0', '557371806,0,0,34,2'}
 
 #focused_set = {'557039865,0,0,10,1', '557039865,0,0,58,0'}
@@ -1257,16 +1293,16 @@ focused_set = {}
 #focused_set = {'556980651,0,0,76,1', '556980651,0,0,77,1'} # cut
 #focused_set = {'556980651,0,0,81,1', '556980651,0,0,80,1'} # pt_hash
 
-for idx, (geojson_file, georef) in enumerate(geojson_files):
+for idx, (case_name, geojson_file, georef) in enumerate(geojson_files):
   print(idx, geojson_file)
   #run(geojson_file, {}, preview=False, export=True, georef=georef)
-  ret = run(geojson_file, focused_set, preview=True, georef=georef)
+  ret = run(geojson_file, focused_set, preview=False, georef=georef)
   print(ret)
 exit()
 
 if __name__ == '__main__':
-  # georef = "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"
-  # geojson_file = "0eca7058-c239-41f3-9f06-8a1243fa2063.json"
+  georef = "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"
+  geojson_file = "0eca7058-c239-41f3-9f06-8a1243fa2063.json"
 
   # georef = "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"
   # geojson_file = "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json"
@@ -1274,11 +1310,11 @@ if __name__ == '__main__':
   # georef = "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"
   # geojson_file = "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json"
 
-  georef = "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"
-  geojson_file = "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json"
+  # georef = "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"
+  # geojson_file = "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json"
 
-  focused_set = run(geojson_file, preview=True)
-  #focused_set = {'557024172,0,0,52,2', '557024172,0,0,42,1', '557024172,0,0,42,3', '557024172,0,0,66,2', '557024172,0,0,52,0', '557024172,0,0,42,4', '557024172,0,0,16,1', '557024172,0,0,63,0', '557024172,0,0,16,4', '557024172,0,0,67,0', '557024172,0,0,53,2', '557024172,0,0,52,3', '557024172,0,0,67,5', '557024172,0,0,66,4', '557024172,0,0,67,4', '557024172,0,0,63,2', '557024172,0,0,42,2', '557024172,0,0,66,5', '557024172,0,0,53,1', '557024172,0,0,42,0', '557024172,0,0,16,0', '557024172,0,0,17,0', '557024172,0,0,67,1', '557024172,0,0,66,1', '557024172,0,0,17,3', '557024172,0,0,17,2', '557024172,0,0,52,1', '557024172,0,0,37,1', '557024172,0,0,63,4', '557024172,0,0,53,0', '557024172,0,0,53,3', '557024172,0,0,16,2', '557024172,0,0,67,3', '557024172,0,0,36,1', '557024172,0,0,66,3', '557024172,0,0,63,1', '557024172,0,0,16,3', '557024172,0,0,63,3', '557024172,0,0,17,1', '557024172,0,0,67,2', '557024172,0,0,37,0', '557024172,0,0,66,0', '557024172,0,0,36,2', '557024172,0,0,36,0', '557024172,0,0,63,5'}
+  #focused_set = run(geojson_file, preview=True)
+  focused_set = {'557024172,0,0,52,2', '557024172,0,0,42,1', '557024172,0,0,42,3', '557024172,0,0,66,2', '557024172,0,0,52,0', '557024172,0,0,42,4', '557024172,0,0,16,1', '557024172,0,0,63,0', '557024172,0,0,16,4', '557024172,0,0,67,0', '557024172,0,0,53,2', '557024172,0,0,52,3', '557024172,0,0,67,5', '557024172,0,0,66,4', '557024172,0,0,67,4', '557024172,0,0,63,2', '557024172,0,0,42,2', '557024172,0,0,66,5', '557024172,0,0,53,1', '557024172,0,0,42,0', '557024172,0,0,16,0', '557024172,0,0,17,0', '557024172,0,0,67,1', '557024172,0,0,66,1', '557024172,0,0,17,3', '557024172,0,0,17,2', '557024172,0,0,52,1', '557024172,0,0,37,1', '557024172,0,0,63,4', '557024172,0,0,53,0', '557024172,0,0,53,3', '557024172,0,0,16,2', '557024172,0,0,67,3', '557024172,0,0,36,1', '557024172,0,0,66,3', '557024172,0,0,63,1', '557024172,0,0,16,3', '557024172,0,0,63,3', '557024172,0,0,17,1', '557024172,0,0,67,2', '557024172,0,0,37,0', '557024172,0,0,66,0', '557024172,0,0,36,2', '557024172,0,0,36,0', '557024172,0,0,63,5'}
   #focused_set = {'557024173,0,0,13,0', '557024173,0,0,17,3', '557024172,0,0,32,2', '557024173,0,0,14,1', '557024173,0,0,15,0', '557024172,0,0,32,1', '557024173,0,0,12,3', '557024173,0,0,12,1', '557024173,0,0,17,4', '557024173,0,0,17,5', '557024172,0,0,21,3', '557024172,0,0,21,0', '557024172,0,0,21,4', '557024173,0,0,12,0', '557024173,0,0,15,2', '557024173,0,0,12,4', '557024173,0,0,12,2', '557024173,0,0,15,4', '557024173,0,0,17,1', '557024173,0,0,13,1', '557024173,0,0,15,5', '557024173,0,0,11,3', '557024173,0,0,11,0', '557024172,0,0,32,0', '557024173,0,0,11,2', '557024173,0,0,17,2', '557024173,0,0,13,2', '557024173,0,0,15,1', '557024173,0,0,17,0', '557024172,0,0,21,2', '557024173,0,0,14,0', '557024172,0,0,21,1', '557024173,0,0,11,1', '557024173,0,0,15,3'}
   #focused_set = {'557024172,0,0,19,3', '557024172,0,0,19,1', '557024173,0,0,2,3', '557024173,0,0,4,1', '557024173,0,0,7,3', '557024172,0,0,46,2', '557024172,0,0,12,3', '557024172,0,0,43,2', '557024173,0,0,5,0', '557024173,0,0,2,1', '557024173,0,0,3,4', '557024172,0,0,20,3', '557024172,0,0,74,1', '557024173,0,0,6,3', '557024172,0,0,20,2', '557024173,0,0,6,2', '557024173,0,0,2,0', '557024173,0,0,3,2', '557024173,0,0,8,3', '557024172,0,0,43,0', '557024172,0,0,20,4', '557024173,0,0,9,3', '557024173,0,0,2,2', '557024173,0,0,6,0', '557024173,0,0,8,0', '557024172,0,0,12,1', '557024172,0,0,20,1', '557024172,0,0,43,1', '557024172,0,0,49,0', '557024172,0,0,20,0', '557024172,0,0,74,0', '557024172,0,0,12,0', '557024173,0,0,8,2', '557024173,0,0,8,4', '557024173,0,0,7,4', '557024173,0,0,4,3', '557024173,0,0,5,2', '557024173,0,0,2,4', '557024172,0,0,19,2', '557024173,0,0,6,1', '557024173,0,0,9,1', '557024173,0,0,8,1', '557024172,0,0,46,1', '557024173,0,0,4,0', '557024173,0,0,7,0', '557024172,0,0,49,1', '557024173,0,0,3,0', '557024173,0,0,9,0', '557024172,0,0,19,0', '557024172,0,0,12,4', '557024173,0,0,8,5', '557024173,0,0,7,2', '557024172,0,0,44,0', '557024172,0,0,44,1', '557024172,0,0,12,2', '557024173,0,0,9,2', '557024172,0,0,46,0', '557024173,0,0,4,2', '557024173,0,0,3,3', '557024172,0,0,74,3', '557024172,0,0,74,4', '557024172,0,0,49,3', '557024173,0,0,7,1', '557024173,0,0,5,1', '557024173,0,0,8,6', '557024173,0,0,3,1', '557024173,0,0,7,5', '557024172,0,0,49,2', '557024172,0,0,74,2', '557024173,0,0,6,4'}
   #focused_set = {'557024174,0,0,17,3', '557024174,0,0,15,0', '557024174,0,0,14,2', '557024174,0,0,14,1', '557024174,0,0,13,1', '557024174,0,0,17,0', '557024172,0,0,46,1', '557024174,0,0,18,0', '557024172,0,0,29,0', '557024172,0,0,29,3', '557024172,0,0,46,2', '557024174,0,0,17,2', '557024174,0,0,20,1', '557024172,0,0,29,1', '557024174,0,0,19,0', '557024174,0,0,17,1', '557024174,0,0,19,1', '557024174,0,0,13,2', '557024174,0,0,14,0', '557024174,0,0,20,3', '557024174,0,0,16,0', '557024174,0,0,18,1', '557024172,0,0,29,2', '557024174,0,0,18,2', '557024172,0,0,46,0', '557024174,0,0,19,2', '557024174,0,0,20,2', '557024174,0,0,20,0', '557024174,0,0,13,3', '557024174,0,0,16,1', '557024174,0,0,15,1', '557024174,0,0,13,0'}
@@ -1286,8 +1322,8 @@ if __name__ == '__main__':
   #focused_set = {'557024172,0,0,71,1', '557024172,0,0,55,1', '557024172,0,0,70,2', '557024172,0,0,71,2', '557024172,0,0,70,1', '557024172,0,0,56,2', '557024172,0,0,56,1', '557024172,0,0,40,0', '557024172,0,0,55,2'}
   #focused_set = {'557024172,0,0,56,2', '557024172,0,0,49,2', '557024172,0,0,56,1', '557024172,0,0,55,1', '557024172,0,0,38,1', '557024172,0,0,71,2', '557024172,0,0,71,1', '557024172,0,0,49,1', '557024172,0,0,55,2', '557024172,0,0,38,2', '557024172,0,0,50,2', '557024172,0,0,50,1', '557024172,0,0,70,1', '557024172,0,0,70,2', '557024172,0,0,40,0'}
 
-  #focused_set = {'557392309,0,0,16,2', '557392309,0,0,15,1', '557392309,0,0,45,1', '557392309,0,0,16,1', '557392309,0,0,29,1', '557392309,0,0,34,2', '557392309,0,0,27,2', '557392309,0,0,38,1', '557392309,0,0,47,0', '557392309,0,0,27,1', '557392309,0,0,47,1', '557392309,0,0,17,0', '557392309,0,0,37,1', '557392309,0,0,71,1', '557392309,0,0,34,1', '557392309,0,0,27,3', '557392309,0,0,15,3', '557392309,0,0,28,1', '557392309,0,0,79,1', '557392309,0,0,41,1', '557392309,0,0,33,1', '557392308,0,0,7,1', '557392309,0,0,29,3', '557392309,0,0,67,1', '557392309,0,0,39,1', '557392309,0,0,43,1', '557392309,0,0,35,1', '557392309,0,0,55,1', '557392309,0,0,29,2', '557392309,0,0,15,2', '557392309,0,0,33,0', '557392309,0,0,68,2', '557392309,0,0,55,2', '557392309,0,0,36,1', '557392309,0,0,51,1', '557392309,0,0,68,1', '557392309,0,0,14,1', '557392309,0,0,37,0', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,28,2'}
   #focused_set = {'557024172,0,0,71,2', '557024172,0,0,56,1', '557024172,0,0,50,1', '557024172,0,0,49,2', '557024172,0,0,38,2', '557024172,0,0,70,2', '557024172,0,0,40,0', '557024172,0,0,56,2', '557024172,0,0,55,2', '557024172,0,0,55,1', '557024172,0,0,50,2', '557024172,0,0,71,1', '557024172,0,0,38,1', '557024172,0,0,70,1', '557024172,0,0,49,1'}
+  #focused_set = {'557392309,0,0,16,2', '557392309,0,0,15,1', '557392309,0,0,45,1', '557392309,0,0,16,1', '557392309,0,0,29,1', '557392309,0,0,34,2', '557392309,0,0,27,2', '557392309,0,0,38,1', '557392309,0,0,47,0', '557392309,0,0,27,1', '557392309,0,0,47,1', '557392309,0,0,17,0', '557392309,0,0,37,1', '557392309,0,0,71,1', '557392309,0,0,34,1', '557392309,0,0,27,3', '557392309,0,0,15,3', '557392309,0,0,28,1', '557392309,0,0,79,1', '557392309,0,0,41,1', '557392309,0,0,33,1', '557392308,0,0,7,1', '557392309,0,0,29,3', '557392309,0,0,67,1', '557392309,0,0,39,1', '557392309,0,0,43,1', '557392309,0,0,35,1', '557392309,0,0,55,1', '557392309,0,0,29,2', '557392309,0,0,15,2', '557392309,0,0,33,0', '557392309,0,0,68,2', '557392309,0,0,55,2', '557392309,0,0,36,1', '557392309,0,0,51,1', '557392309,0,0,68,1', '557392309,0,0,14,1', '557392309,0,0,37,0', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,28,2'}
   #focused_set = {'557392309,0,0,47,0', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,15,3', '557392309,0,0,14,2', '557392309,0,0,43,1', '557392309,0,0,47,1', '557392309,0,0,14,1', '557392309,0,0,15,1', '557392309,0,0,44,1', '557392309,0,0,68,1', '557392309,0,0,15,2'}
   if focused_set:
     print(focused_set)
