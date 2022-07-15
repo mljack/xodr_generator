@@ -64,3 +64,19 @@ def xxyy2xyxy(xxyy):
 
 def xyxy2xxyy(xy):
   return ([x for x, y in xy], [y for x, y in xy])
+
+
+def clip_xyxy(xyxy, length):
+  if not isinstance(xyxy, list):
+    xyxy = list(xyxy)
+  assert(len(xyxy) > 1)
+  d = 0.0
+  xyxy2 = [xyxy[0]]
+  for idx in range(1, len(xyxy)):
+    xy = xyxy[idx]
+    dd = math.sqrt(dist2(xyxy2[-1], xy))
+    xyxy2.append(xy)
+    d += dd
+    if d >= length:
+      break
+  return xyxy2

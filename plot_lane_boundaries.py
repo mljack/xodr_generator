@@ -12,7 +12,7 @@ from matplotlib.widgets import RectangleSelector
 import polygon_item
 import fig_manipulator
 import xodr_exporter
-from geom_utils import WorldBox, first, last, is_almost_the_same_pt, curvature, pt_hash, xxyy2xyxy, xyxy2xxyy
+from geom_utils import WorldBox, first, last, is_almost_the_same_pt, curvature, pt_hash, xxyy2xyxy, xyxy2xxyy, clip_xyxy
 
 import shapely.geometry as sgeom
 from shapely.ops import split
@@ -563,8 +563,7 @@ class RoadNetwork:
           pts_hashmap[pt_right1_hash].add(pt_right2_hash)
     return base_pts
 
-  def extend_bnd_by_extrapolation(self, bnd, start_or_end):
-    d = 10.0  # in meters
+  def extend_bnd_by_extrapolation(self, bnd, start_or_end, d):
     if start_or_end == "start":
       heading = math.atan2(bnd[0][1]-bnd[1][1], bnd[0][0]-bnd[1][0])
       bnd.appendleft((bnd[0][0]+math.cos(heading)*d, bnd[0][1]+math.sin(heading)*d))
@@ -719,6 +718,7 @@ class RoadNetwork:
         roads_to_recut_bnd.append(road)
 
     # Extend lane boundaries
+    d = 10.0  # in meters
     for road in roads_to_recut_bnd:
       for lane_id, lane in road.lanes.items():
         left_bnd = deque(xxyy2xyxy(lane.left_bnd))
@@ -726,43 +726,43 @@ class RoadNetwork:
         if len(lane.predecessors) != 0:
             # With boundaries of predecessor lane
           prev_lane = first(lane.predecessors)
-          left_bnd.extendleft(reversed(xxyy2xyxy(prev_lane.left_bnd)))
-          right_bnd.extendleft(reversed(xxyy2xyxy(prev_lane.right_bnd)))
+          left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.left_bnd)), d))
+          right_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.right_bnd)), d))
         else:
           if len(lane.left_neighbors) and len(first(lane.left_neighbors).predecessors) > 0:
             # With the right boundary of left neighbor's predecessor lane
             neighbor_prev_lane = first(first(lane.left_neighbors).predecessors)
-            left_bnd.extendleft(reversed(xxyy2xyxy(neighbor_prev_lane.right_bnd)))
+            left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(neighbor_prev_lane.right_bnd)), d))
           else:
             # By extrapolation
-            self.extend_bnd_by_extrapolation(left_bnd, "start")
+            self.extend_bnd_by_extrapolation(left_bnd, "start", d)
           if len(lane.right_neighbors) and len(first(lane.right_neighbors).predecessors) > 0:
             # with the left boundary of right neighbor's predecessor lane
             neighbor_prev_lane = first(first(lane.right_neighbors).predecessors)
-            right_bnd.extendleft(reversed(xxyy2xyxy(neighbor_prev_lane.left_bnd)))
+            right_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(neighbor_prev_lane.left_bnd)), d))
           else:
             # By extrapolation
-            self.extend_bnd_by_extrapolation(right_bnd, "start")
+            self.extend_bnd_by_extrapolation(right_bnd, "start", d)
         if len(lane.successors) != 0:
             # With boundaries of predecessor lane
           next_lane = first(lane.successors)
-          left_bnd.extend(xxyy2xyxy(next_lane.left_bnd))
-          right_bnd.extend(xxyy2xyxy(next_lane.right_bnd))
+          left_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.left_bnd), d))
+          right_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.right_bnd), d))
         else:
           if len(lane.left_neighbors) and len(first(lane.left_neighbors).successors) > 0:
             # With right boundary of left neighbor's successor lane
             neighbor_next_lane = first(first(lane.left_neighbors).successors)
-            left_bnd.extend(xxyy2xyxy(neighbor_next_lane.right_bnd))
+            left_bnd.extend(clip_xyxy(xxyy2xyxy(neighbor_next_lane.right_bnd), d))
           else:
             # By extrapolation
-            self.extend_bnd_by_extrapolation(left_bnd, "end")
+            self.extend_bnd_by_extrapolation(left_bnd, "end", d)
           if len(lane.right_neighbors) and len(first(lane.right_neighbors).successors) > 0:
             # With left boundary of right neighbor's successor lane
             neighbor_next_lane = first(first(lane.right_neighbors).successors)
-            right_bnd.extend(xxyy2xyxy(neighbor_next_lane.left_bnd))
+            right_bnd.extend(clip_xyxy(xxyy2xyxy(neighbor_next_lane.left_bnd), d))
           else:
             # By extrapolation
-            self.extend_bnd_by_extrapolation(right_bnd, "end")
+            self.extend_bnd_by_extrapolation(right_bnd, "end", d)
         lane.left_bnd_to_recut = left_bnd
         lane.right_bnd_to_recut = right_bnd
 
@@ -800,7 +800,7 @@ class RoadNetwork:
     #   (...),
     #   ...
     # ]
-    #self.print_separators(seps)
+    self.print_separators(seps)
     self.select_road_direction_at_terminals(seps)
     self.determine_separation_line_base_point(seps)
     self.prepare_for_bnd_recut(seps)
@@ -1289,18 +1289,18 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
   return focused_set
 
 geojson_files = [
-  ("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
+  #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
   #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
   #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
   #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
 
   #("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
-  ("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # Fixed. connecting road with 2 next roads: 806010035 => {806000036, 806000037}
-  #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
-  #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035,  806000036,   806000037
-  ##("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # lane shape # ref line cut
-  ##("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # lane shape # ref line cut
-  ##("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
+  #("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # Fixed. connecting road with 2 next roads: 806010035 => {806000036, 806000037}
+  #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"),  # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"), # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  #("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # Fixed. lane shape # ref line cut
+  ("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # Fixed. lane shape # ref line cut
+  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
 
@@ -1312,6 +1312,8 @@ focused_set = {}
 #focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
 # case F, split connecting road with 2 next roads
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,34,2', '557371806,0,0,35,1', '557371806,0,0,44,2', '557371806,0,0,36,0', '557371806,0,0,35,2', '557371806,0,0,35,3'}
+# case K
+#focused_set = {'556940257,0,0,92,2', '556940257,0,0,27,1', '556940257,0,0,91,1', '556940257,0,0,54,1', '556940257,0,0,44,1', '556940257,0,0,91,2', '556940257,0,0,54,2', '556940257,0,0,92,3', '556940257,0,0,52,0', '556940257,0,0,43,1', '556940257,0,0,92,1', '556940257,0,0,43,2', '556940257,0,0,52,1', '556940257,0,0,44,2', '556940257,0,0,27,2', '556940257,0,0,66,1', '556940257,0,0,91,3'}
 
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,35,3', '557371806,0,0,44,2', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,35,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,35,2', '557371806,0,0,36,0', '557371806,0,0,34,2'}
 
