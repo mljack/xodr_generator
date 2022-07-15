@@ -58,7 +58,7 @@ class Junction:
     self.connecting_roads.append(road)
 
   def debug_print(self):
-    print(f"Junction [{self.set_id()}]")
+    print(f"{self}")
     print(f"\tConnecting Roads:")
     for road in self.connecting_roads:
       print((f"\t\t[{road.id[6:]}]"))
@@ -67,7 +67,7 @@ class Junction:
     return "|".join(sorted([str(j.short_id) for j in self.connecting_roads]))
 
   def __repr__(self):
-    return f"Junction[{self.set_id()}]"
+    return f"Junction({self.id})[{self.set_id()}]"
 
 
 class Lane:
@@ -242,6 +242,7 @@ class Road:
     #   ... => (road_a_start, road_a_end) => (road_b_start, road_b_end) => ...
     self.linkage = [set(), set()] # [set([(prev_road_a, "end"), ...]), set([(next_road_b, "start"),...])]
     self.junction = None # For connecting roads of default junctions
+    self.in_junction = False
 
   def add_lane(self, lane):
     lane.road_id = self.id
@@ -791,46 +792,46 @@ class RoadNetwork:
     self.recut_bnd(seps)
     return seps
 
-  def update_or_create_junction(self, connecting_roads, this_junction = None):
-    if this_junction is None:
-      for i, connecting_road in enumerate(connecting_roads):
-        if connecting_road.junction is not None:
-          this_junction = connecting_road.junction
-          break
-    if this_junction is None:
-      this_junction = Junction(self.generate_extra_junction_id())
-      self.default_junctions.append(this_junction)
-    for connecting_road in connecting_roads:
-      if this_junction == connecting_road.junction:
-        continue
-      if connecting_road.junction is None:
-        this_junction.add_connecting_road(connecting_road)
-        connecting_road.junction = this_junction
-      else:
-        # Merge with existing junctions
-        for road in connecting_road.junction.connecting_roads:
-          road.junction = this_junction
-          this_junction.add_connecting_road(road)
-        self.default_junctions.remove(connecting_road.junction)
-    return this_junction
+  def update_road_junction_set(self, connecting_roads, road_junction_set):
+    for idx, road in enumerate(connecting_roads):
+      road.in_junction = True
+      if idx != 0:
+        road_junction_set.union(road, connecting_roads[idx-1])
 
   def build_default_junctions(self, seps):
+    road_junction_set = DisjointSet()
     for sep in seps:
       if sep.road_split_from is not None:
         # From spliting roads
         roads = [road for road, start_or_end in sep.terminals if road != sep.road_split_from]
-        sep.junction = self.update_or_create_junction(roads)
+        self.update_road_junction_set(roads, road_junction_set)
       elif sep.road_merged_to is not None:
         # From merging roads
         roads = [road for road, start_or_end in sep.terminals if road != sep.road_merged_to]
-        sep.junction = self.update_or_create_junction(roads)
+        self.update_road_junction_set(roads, road_junction_set)
       elif len(sep.terminals) > 2:
         # From overlapped roads
         for road, start_or_end in sep.terminals:
           if len(road.overlapped_roads) > 0:
-            junction = sep.junction if sep.junction is not None else road.junction
             roads = [road_b for road_b, start_or_end_b in sep.terminals if start_or_end == start_or_end_b]
-            sep.junction = self.update_or_create_junction(roads, this_junction = junction)
+            self.update_road_junction_set(roads, road_junction_set)
+
+    for road_id, road in self.roads.items():
+      if not road.in_junction:
+        continue
+      for prev_road in road.predecessor_roads:
+        if prev_road.in_junction:
+          road_junction_set.union(road, prev_road)
+      for next_road in road.successor_roads:
+        if next_road.in_junction:
+          road_junction_set.union(road, next_road)
+
+    for connecting_roads in road_junction_set.itersets():
+      this_junction = Junction(self.generate_extra_junction_id())
+      self.default_junctions.append(this_junction)
+      for road in connecting_roads:
+        road.junction = this_junction
+        this_junction.add_connecting_road(road)  
 
   def connecting_road_routes(self, lane, base_route=[]):
     # Compute all routes of connecting roads recursively
@@ -870,12 +871,12 @@ class RoadNetwork:
       # build lane terminal mapping table
       if idx == 0:
         k_lane = (lane, "start")
-        if k not in lane_map:
+        if k_lane not in lane_map:
           lane_map[k_lane] = []
         lane_map[k_lane].append((new_lane, "start"))
       if idx == len(route)-1:
         k_lane = (lane, "end")
-        if k not in lane_map:
+        if k_lane not in lane_map:
           lane_map[k_lane] = []
         lane_map[k_lane].append((new_lane, "end"))
 
@@ -893,6 +894,7 @@ class RoadNetwork:
     return new_road
 
   def merge_junctions(self, seps):
+    print("Merging Junctions...")
     junction_set = DisjointSet()
     new_roads = []
     road_map = {} # mapping between old and new road terminals
@@ -1069,11 +1071,15 @@ class RoadNetwork:
 
     # Junctions
     self.build_default_junctions(seps)
-    self.print_separators(seps)
+    # self.print_separators(seps)
+    # for junction in self.default_junctions:
+    #   junction.debug_print()
+    # print("################################")
     self.merge_junctions(seps)
-    print("################################")
-    self.print_separators(seps)
-    print("################################")
+    # for junction in self.default_junctions:
+    #   junction.debug_print()
+    # self.print_separators(seps)
+    # print("################################")
 
     # Road Links
     self.build_road_connections(seps)
@@ -1269,21 +1275,23 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
 geojson_files = [
   #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
   #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
-  #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
-  #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"),
+  #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
+  ("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
 
-  ("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
-  #("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # 806010035, 806000036, 806000037
-  #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
-  #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035,  806000036,   806000037
-  #("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # lane shape # ref line cut
-  #("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # lane shape # ref line cut
-  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
+  #("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
+  ##("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # 806010035, 806000036, 806000037
+  ##("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  ##("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  ##("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # lane shape # ref line cut
+  ##("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # lane shape # ref line cut
+  ##("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
 
+# case D, topo issue for new roads from routes in junction:
+focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,1', '557392309,0,0,15,2', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,68,1', '557392309,0,0,47,1', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,47,0', '557392309,0,0,14,1', '557392309,0,0,43,1'}
 # case E, 4 overlapped lanes
-focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
+#focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
 
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,35,3', '557371806,0,0,44,2', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,35,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,35,2', '557371806,0,0,36,0', '557371806,0,0,34,2'}
 
