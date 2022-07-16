@@ -199,6 +199,9 @@ class Lane:
   def update_poly(self):
     self.poly = xxyy2xyxy(self.left_bnd) + list(reversed(xxyy2xyxy(self.right_bnd)))
 
+  def resample_bnd_linear(self, d):
+    self.left_bnd = xyxy2xxyy(xodr_exporter.resample_linear(xxyy2xyxy(self.left_bnd), d))
+    self.right_bnd = xyxy2xxyy(xodr_exporter.resample_linear(xxyy2xyxy(self.right_bnd), d))
 
   def debug_print(self, prefix=""):
     print(f"{prefix}Lane[{'%4s' % self.full_id[14:]}]\t", end="")
@@ -287,6 +290,10 @@ class Road:
         pts = list(reversed(line1)) + pts + line2
 
     self.ref_line = xyxy2xxyy(pts)
+
+  def resample_bnd_linear(self, d):
+    for lane in self.lanes.values():
+      lane.resample_bnd_linear(d)
 
   def compute_ref_line_bc_derivative(self):
     h1 = math.atan2(self.ref_line[1][1]-self.ref_line[1][0], self.ref_line[0][1]-self.ref_line[0][0])
@@ -861,6 +868,20 @@ class RoadNetwork:
   def build_road_from_route(self, route, road_id, road_map, lane_map):
     new_lane = Lane(str(road_id)+",0", 1, "JUNCTION_ROAD")
     new_road = Road(road_id)
+
+    # Add a full fake lane if any lane has a fake lane neighbor.
+    has_fake_lane = max([len(lane.road.lanes) for lane in route]) > 1
+    if has_fake_lane:
+      new_fake_lane = Lane(str(road_id)+",99", 99, "JUNCTION_ROAD")
+      for idx, lane in enumerate(route):
+        new_fake_lane.left_bnd[0] += first(lane.road.lanes.values()).left_bnd[0]
+        new_fake_lane.left_bnd[1] += first(lane.road.lanes.values()).left_bnd[1]
+        new_fake_lane.right_bnd[0] += lane.left_bnd[0]
+        new_fake_lane.right_bnd[1] += lane.left_bnd[1]
+      new_fake_lane.update_poly()
+      new_road.add_lane(new_fake_lane)
+
+    # Build the new lane
     for idx, lane in enumerate(route):
       new_lane.left_bnd[0] += lane.left_bnd[0]
       new_lane.left_bnd[1] += lane.left_bnd[1]
@@ -1110,7 +1131,10 @@ class RoadNetwork:
       road.backup_ref_line()
       road.build_ref_line()
       road.resample_ref_line(3.0)
-      road.resample_ref_line(0.1, "cubic")
+      road.resample_ref_line(0.1, "cubic")  
+      # road.resample_bnd_linear(2.0)
+      # for lane_id, lane in road.lanes.items():
+      #   lane.update_poly()
 
   def debug_print(self):
     for road_id, road in self.roads.items():
@@ -1289,7 +1313,7 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
   return focused_set
 
 geojson_files = [
-  #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
+  ("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
   #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
   #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
   #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
@@ -1299,8 +1323,8 @@ geojson_files = [
   #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"),  # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
   #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"), # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
   #("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # Fixed. lane shape # ref line cut
-  ("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # Fixed. lane shape # ref line cut
-  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
+  #("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # Fixed. lane shape # ref line cut
+  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # irregular overlapped lanes # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
 

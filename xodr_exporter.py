@@ -78,7 +78,7 @@ def export_road(odr, road):
         width_a = []
         width_b = []
         soffset = []
-        right_bnd_pts = [(lane.right_bnd[0][idx], lane.right_bnd[1][idx]) for idx in range(len(lane.right_bnd[0]))]
+        right_bnd_pts = xxyy2xyxy(lane.right_bnd)
         # if lane.full_id == "557024172,0,0,36,0":
         #     new_right_bnd_pts = resample_linear(right_bnd_pts, 0.1)
         #     print(f"[{lane.full_id}] end   ","    right_bnd_pts: %.10f %.10f" % (right_bnd_pts[-1][0], right_bnd_pts[-1][1]))
