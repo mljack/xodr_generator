@@ -12,7 +12,7 @@ from matplotlib.widgets import RectangleSelector
 import polygon_item
 import fig_manipulator
 import xodr_exporter
-from geom_utils import WorldBox, first, last, is_almost_the_same_pt, curvature, pt_hash, xxyy2xyxy, xyxy2xxyy, clip_xyxy
+from geom_utils import WorldBox, first, last, is_almost_the_same_pt, curvature, pt_hash, xxyy2xyxy, xyxy2xxyy, clip_xyxy, dist2
 
 import shapely.geometry as sgeom
 from shapely.ops import split
@@ -105,6 +105,8 @@ class Lane:
     
     self.left_bnd_to_recut = []  # [(x1,y1),(x2,y2),...])
     self.right_bnd_to_recut = []
+    self.left_bnd_recut_result = None
+    self.right_bnd_recut_result = None
 
     self.clear_topo()
 
@@ -155,13 +157,17 @@ class Lane:
       self.successors.remove(lane)
 
   def recut_bnd(self, base_pt, heading, start_or_end):
+    if self.left_bnd_recut_result is None:
+      self.left_bnd_recut_result = self.left_bnd_to_recut
+      self.right_bnd_recut_result = self.right_bnd_to_recut
+      
     d = 60.0
     heading += math.pi / 2
     separator_line = [(base_pt[0] + d * math.cos(heading), base_pt[1] + d * math.sin(heading))]
     separator_line.append((base_pt[0] - d * math.cos(heading), base_pt[1] - d * math.sin(heading)))
 
-    left_bnd_polyline = sgeom.LineString(self.left_bnd_to_recut)
-    right_bnd_polyline = sgeom.LineString(self.right_bnd_to_recut)
+    left_bnd_polyline = sgeom.LineString(self.left_bnd_recut_result)
+    right_bnd_polyline = sgeom.LineString(self.right_bnd_recut_result)
     separator_polyline = sgeom.LineString(separator_line)
 
     result = split(left_bnd_polyline, separator_polyline)
@@ -176,9 +182,9 @@ class Lane:
     assert(isinstance(left_sep_pt, Point))
 
     if start_or_end == "start":
-      self.left_bnd_to_recut = [(left_sep_pt.x, left_sep_pt.y)] + xxyy2xyxy(left2_pts)
+      self.left_bnd_recut_result = [(left_sep_pt.x, left_sep_pt.y)] + xxyy2xyxy(left2_pts)
     else: # "end"
-      self.left_bnd_to_recut = xxyy2xyxy(left1_pts) + [(left_sep_pt.x, left_sep_pt.y)]
+      self.left_bnd_recut_result = xxyy2xyxy(left1_pts) + [(left_sep_pt.x, left_sep_pt.y)]
 
     result = split(right_bnd_polyline, separator_polyline)
     if len(result.geoms) < 2:
@@ -187,12 +193,15 @@ class Lane:
     right1_pts = [result.geoms[0].xy[0], result.geoms[0].xy[1]]
     right2_pts = [result.geoms[1].xy[0], result.geoms[1].xy[1]]
     right_sep_pt = right_bnd_polyline.intersection(separator_polyline)
+    if not isinstance(right_sep_pt, Point):
+      # Failed to cut the boundary. Show debug lines.
+      return [self.right_bnd_to_recut, separator_line]
     assert(isinstance(right_sep_pt, Point))
 
     if start_or_end == "start":
-      self.right_bnd_to_recut = [(right_sep_pt.x, right_sep_pt.y)] + xxyy2xyxy(right2_pts)
+      self.right_bnd_recut_result = [(right_sep_pt.x, right_sep_pt.y)] + xxyy2xyxy(right2_pts)
     else: # "end"
-      self.right_bnd_to_recut = xxyy2xyxy(right1_pts) + [(right_sep_pt.x, right_sep_pt.y)]
+      self.right_bnd_recut_result = xxyy2xyxy(right1_pts) + [(right_sep_pt.x, right_sep_pt.y)]
     
     return []
 
@@ -730,46 +739,88 @@ class RoadNetwork:
       for lane_id, lane in road.lanes.items():
         left_bnd = deque(xxyy2xyxy(lane.left_bnd))
         right_bnd = deque(xxyy2xyxy(lane.right_bnd))
-        if len(lane.predecessors) != 0:
-            # With boundaries of predecessor lane
-          prev_lane = first(lane.predecessors)
-          left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.left_bnd)), d))
-          right_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.right_bnd)), d))
-        else:
-          if len(lane.left_neighbors) and len(first(lane.left_neighbors).predecessors) > 0:
-            # With the right boundary of left neighbor's predecessor lane
-            neighbor_prev_lane = first(first(lane.left_neighbors).predecessors)
-            left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(neighbor_prev_lane.right_bnd)), d))
-          else:
+
+        if lane.is_fake():
+          # Extend boundaries of fake lanes.
+          # Fake lanes are the first lane of connecting roads which only has
+          # at most one road in predecessor_roads/successor_roads
+          assert(len(lane.road.predecessor_roads) <= 1)
+          if len(lane.road.predecessor_roads) == 1:
+            predecessor_road = first(lane.road.predecessor_roads)
+            prev_lane = first(predecessor_road.lanes.values())
+            left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.left_bnd)), d))
+            
+            prev_lane_left_bnd = xxyy2xyxy(prev_lane.left_bnd)
+            prev_lane_right_bnd = xxyy2xyxy(prev_lane.right_bnd)
+            dist_to_prev_left = dist2(first(right_bnd), last(prev_lane_left_bnd))
+            dist_to_prev_right = dist2(first(right_bnd), last(prev_lane_right_bnd))
+            if dist_to_prev_left < dist_to_prev_right:
+              right_bnd.extendleft(clip_xyxy(reversed(prev_lane_left_bnd), d))
+            else:
+              right_bnd.extendleft(clip_xyxy(reversed(prev_lane_right_bnd), d))
+          else: # len(lane.road.predecessor_roads) == 0
             # By extrapolation
             self.extend_bnd_by_extrapolation(left_bnd, "start", d)
-          if len(lane.right_neighbors) and len(first(lane.right_neighbors).predecessors) > 0:
-            # with the left boundary of right neighbor's predecessor lane
-            neighbor_prev_lane = first(first(lane.right_neighbors).predecessors)
-            right_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(neighbor_prev_lane.left_bnd)), d))
-          else:
-            # By extrapolation
             self.extend_bnd_by_extrapolation(right_bnd, "start", d)
-        if len(lane.successors) != 0:
-            # With boundaries of predecessor lane
-          next_lane = first(lane.successors)
-          left_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.left_bnd), d))
-          right_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.right_bnd), d))
-        else:
-          if len(lane.left_neighbors) and len(first(lane.left_neighbors).successors) > 0:
-            # With right boundary of left neighbor's successor lane
-            neighbor_next_lane = first(first(lane.left_neighbors).successors)
-            left_bnd.extend(clip_xyxy(xxyy2xyxy(neighbor_next_lane.right_bnd), d))
-          else:
+          assert(len(lane.road.successor_roads) <= 1)
+          if len(lane.road.successor_roads) == 1:
+            successor_road = first(lane.road.successor_roads)
+            next_lane = first(successor_road.lanes.values())
+            left_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.left_bnd), d))
+
+            next_lane_left_bnd = xxyy2xyxy(next_lane.left_bnd)
+            next_lane_right_bnd = xxyy2xyxy(next_lane.right_bnd)
+            dist_to_next_left = dist2(last(right_bnd), first(next_lane_left_bnd))
+            dist_to_next_right = dist2(last(right_bnd), first(next_lane_right_bnd))
+            if dist_to_next_left < dist_to_next_right:
+              right_bnd.extend(clip_xyxy(next_lane_left_bnd, d))
+            else:
+              right_bnd.extend(clip_xyxy(next_lane_right_bnd, d))
+          else: # len(lane.road.successor_roads) == 0
             # By extrapolation
             self.extend_bnd_by_extrapolation(left_bnd, "end", d)
-          if len(lane.right_neighbors) and len(first(lane.right_neighbors).successors) > 0:
-            # With left boundary of right neighbor's successor lane
-            neighbor_next_lane = first(first(lane.right_neighbors).successors)
-            right_bnd.extend(clip_xyxy(xxyy2xyxy(neighbor_next_lane.left_bnd), d))
-          else:
-            # By extrapolation
             self.extend_bnd_by_extrapolation(right_bnd, "end", d)
+        else: # not lane.is_fake():
+          if len(lane.predecessors) != 0:
+              # With boundaries of predecessor lane
+            prev_lane = first(lane.predecessors)
+            left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.left_bnd)), d))
+            right_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.right_bnd)), d))
+          else:
+            if len(lane.left_neighbors) and len(first(lane.left_neighbors).predecessors) > 0:
+              # With the right boundary of left neighbor's predecessor lane
+              neighbor_prev_lane = first(first(lane.left_neighbors).predecessors)
+              left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(neighbor_prev_lane.right_bnd)), d))
+            else:
+              # By extrapolation
+              self.extend_bnd_by_extrapolation(left_bnd, "start", d)
+            if len(lane.right_neighbors) and len(first(lane.right_neighbors).predecessors) > 0:
+              # with the left boundary of right neighbor's predecessor lane
+              neighbor_prev_lane = first(first(lane.right_neighbors).predecessors)
+              right_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(neighbor_prev_lane.left_bnd)), d))
+            else:
+              # By extrapolation
+              self.extend_bnd_by_extrapolation(right_bnd, "start", d)
+          if len(lane.successors) != 0:
+              # With boundaries of predecessor lane
+            next_lane = first(lane.successors)
+            left_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.left_bnd), d))
+            right_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.right_bnd), d))
+          else:
+            if len(lane.left_neighbors) and len(first(lane.left_neighbors).successors) > 0:
+              # With right boundary of left neighbor's successor lane
+              neighbor_next_lane = first(first(lane.left_neighbors).successors)
+              left_bnd.extend(clip_xyxy(xxyy2xyxy(neighbor_next_lane.right_bnd), d))
+            else:
+              # By extrapolation
+              self.extend_bnd_by_extrapolation(left_bnd, "end", d)
+            if len(lane.right_neighbors) and len(first(lane.right_neighbors).successors) > 0:
+              # With left boundary of right neighbor's successor lane
+              neighbor_next_lane = first(first(lane.right_neighbors).successors)
+              right_bnd.extend(clip_xyxy(xxyy2xyxy(neighbor_next_lane.left_bnd), d))
+            else:
+              # By extrapolation
+              self.extend_bnd_by_extrapolation(right_bnd, "end", d)
         lane.left_bnd_to_recut = left_bnd
         lane.right_bnd_to_recut = right_bnd
 
@@ -787,10 +838,10 @@ class RoadNetwork:
 
     # Move results from temp var to the final lane.left_bnd/right_bnd
     for lane in updated_lanes:
-      lane.left_bnd = xyxy2xxyy(lane.left_bnd_to_recut)
-      lane.right_bnd = xyxy2xxyy(lane.right_bnd_to_recut)
-      lane.left_bnd_to_recut = []
-      lane.right_bnd_to_recut = []
+      lane.left_bnd = xyxy2xxyy(lane.left_bnd_recut_result)
+      lane.right_bnd = xyxy2xxyy(lane.right_bnd_recut_result)
+      lane.left_bnd_recut_result = None
+      lane.right_bnd_recut_result = None
 
   def refine_lane_terminals(self):
     # Tweak terminals of lane boundaries
@@ -1132,9 +1183,9 @@ class RoadNetwork:
       road.build_ref_line()
       road.resample_ref_line(3.0)
       road.resample_ref_line(0.1, "cubic")  
-      # road.resample_bnd_linear(2.0)
-      # for lane_id, lane in road.lanes.items():
-      #   lane.update_poly()
+      road.resample_bnd_linear(2.0)
+      for lane_id, lane in road.lanes.items():
+        lane.update_poly()
 
   def debug_print(self):
     for road_id, road in self.roads.items():
@@ -1330,6 +1381,8 @@ focused_set = {}
 
 # case A, split overlapped lanes with some non-overlap lane in the same road
 #focused_set = {'557024172,0,0,29,2', '557024172,0,0,26,3', '557024172,0,0,26,1', '557024172,0,0,38,2', '557024172,0,0,28,1', '557024172,0,0,29,1', '557024172,0,0,27,1', '557024172,0,0,28,2', '557024172,0,0,27,2', '557024172,0,0,30,1', '557024172,0,0,38,1', '557024172,0,0,30,0', '557024172,0,0,26,2'}
+# case A, lane width resampling
+focused_set = {'557024172,0,0,52,1', '557024172,0,0,45,1', '557024172,0,0,52,2', '557024172,0,0,51,1', '557024172,0,0,51,2'}
 # case D, topo issue for new roads from routes in junction:
 #focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,1', '557392309,0,0,15,2', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,68,1', '557392309,0,0,47,1', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,47,0', '557392309,0,0,14,1', '557392309,0,0,43,1'}
 # case E, 4 overlapped lanes

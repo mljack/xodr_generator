@@ -108,7 +108,7 @@ def export_road(odr, road):
             if pt_idx == 0:
                 s = 0.0
             elif pt_idx == len(right_bnd_pts) - 1:
-                s = LineString(right_bnd_pts).length
+                s = ref.length
             width_a.append(d)
             soffset.append(s)
             old_pt2 = pt2
