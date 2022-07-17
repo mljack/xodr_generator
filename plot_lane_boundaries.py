@@ -245,6 +245,7 @@ class Road:
 
     self.xodr = None
     self.lanes = OrderedDict()
+    self.has_fake_lanes = False
     self.old_ref_line = None
     self.ref_line = None  # (xx, yy)
     self.overlapped_roads = set()
@@ -259,6 +260,8 @@ class Road:
   def add_lane(self, lane):
     lane.road_id = self.id
     lane.road = self
+    if lane.is_fake():
+      self.has_fake_lanes = True
     self.lanes[lane.id] = lane
 
   def sort_lanes(self):
@@ -725,13 +728,40 @@ class RoadNetwork:
       else:
         sep.base_pts = base_pts
 
+  def find_nearest_lane_boundary(self, bnd, roads, bnd_start_or_end):
+    min_dist = 9999.0
+    min_dist_bnd = None
+    #lane_str = ""
+    for road in roads:
+      for lane in road.lanes.values():
+        left_bnd2 = xxyy2xyxy(lane.left_bnd)
+        right_bnd2 = xxyy2xyxy(lane.right_bnd)
+        if bnd_start_or_end == "start":
+          d1 = dist2(first(bnd), last(left_bnd2))
+          d2 = dist2(first(bnd), last(right_bnd2))
+        else: # "end"
+          d1 = dist2(last(bnd), first(left_bnd2))
+          d2 = dist2(last(bnd), first(right_bnd2))
+        if d1 < min_dist:
+          min_dist_bnd = left_bnd2
+          min_dist = d1
+          #lane_str = f"{lane} left"
+        if d2 < min_dist:
+          min_dist_bnd = right_bnd2
+          min_dist = d2
+          #lane_str = f"{lane} right"
+    #print(f"\t\t\t{lane_str} {min_dist}")
+    return min_dist_bnd
+
   def prepare_for_bnd_recut(self, seps):
-    roads_to_recut_bnd = []
+    roads_to_recut_bnd = set()
     for sep in seps:
       if len(sep.base_pts) != 1:
         continue
       for road, start_or_end in sep.terminals:
-        roads_to_recut_bnd.append(road)
+        roads_to_recut_bnd.add(road)
+    roads_to_recut_bnd = list(roads_to_recut_bnd)
+    roads_to_recut_bnd.sort(key=lambda r: r.id)
 
     # Extend lane boundaries
     d = 10.0  # in meters
@@ -742,44 +772,38 @@ class RoadNetwork:
 
         if lane.is_fake():
           # Extend boundaries of fake lanes.
-          # Fake lanes are the first lane of connecting roads which only has
-          # at most one road in predecessor_roads/successor_roads
-          assert(len(lane.road.predecessor_roads) <= 1)
-          if len(lane.road.predecessor_roads) == 1:
-            predecessor_road = first(lane.road.predecessor_roads)
-            prev_lane = first(predecessor_road.lanes.values())
-            left_bnd.extendleft(clip_xyxy(reversed(xxyy2xyxy(prev_lane.left_bnd)), d))
-            
-            prev_lane_left_bnd = xxyy2xyxy(prev_lane.left_bnd)
-            prev_lane_right_bnd = xxyy2xyxy(prev_lane.right_bnd)
-            dist_to_prev_left = dist2(first(right_bnd), last(prev_lane_left_bnd))
-            dist_to_prev_right = dist2(first(right_bnd), last(prev_lane_right_bnd))
-            if dist_to_prev_left < dist_to_prev_right:
-              right_bnd.extendleft(clip_xyxy(reversed(prev_lane_left_bnd), d))
-            else:
-              right_bnd.extendleft(clip_xyxy(reversed(prev_lane_right_bnd), d))
-          else: # len(lane.road.predecessor_roads) == 0
+          # Find nearest boundaries in predecessor_roads/successor_roads
+          #print(f"Lane[{lane}] start left extended to:")
+          left_prev_bnd = self.find_nearest_lane_boundary(left_bnd, lane.road.predecessor_roads, "start")
+          if left_prev_bnd is None:
             # By extrapolation
             self.extend_bnd_by_extrapolation(left_bnd, "start", d)
-            self.extend_bnd_by_extrapolation(right_bnd, "start", d)
-          assert(len(lane.road.successor_roads) <= 1)
-          if len(lane.road.successor_roads) == 1:
-            successor_road = first(lane.road.successor_roads)
-            next_lane = first(successor_road.lanes.values())
-            left_bnd.extend(clip_xyxy(xxyy2xyxy(next_lane.left_bnd), d))
+          else:
+            left_bnd.extendleft(clip_xyxy(reversed(left_prev_bnd), d))
 
-            next_lane_left_bnd = xxyy2xyxy(next_lane.left_bnd)
-            next_lane_right_bnd = xxyy2xyxy(next_lane.right_bnd)
-            dist_to_next_left = dist2(last(right_bnd), first(next_lane_left_bnd))
-            dist_to_next_right = dist2(last(right_bnd), first(next_lane_right_bnd))
-            if dist_to_next_left < dist_to_next_right:
-              right_bnd.extend(clip_xyxy(next_lane_left_bnd, d))
-            else:
-              right_bnd.extend(clip_xyxy(next_lane_right_bnd, d))
-          else: # len(lane.road.successor_roads) == 0
+          #print(f"Lane[{lane}] start right extended to:")
+          right_prev_bnd = self.find_nearest_lane_boundary(right_bnd, lane.road.predecessor_roads, "start")
+          if right_prev_bnd is None:
+            # By extrapolation
+            self.extend_bnd_by_extrapolation(right_bnd, "start", d)
+          else:
+            right_bnd.extendleft(clip_xyxy(reversed(right_prev_bnd), d))
+
+          #print(f"Lane[{lane}] end left extended to:")
+          left_next_bnd = self.find_nearest_lane_boundary(left_bnd, lane.road.successor_roads, "end")
+          if left_next_bnd is None:
             # By extrapolation
             self.extend_bnd_by_extrapolation(left_bnd, "end", d)
+          else:
+            left_bnd.extend(clip_xyxy(left_next_bnd, d))
+          #print(f"Lane[{lane}] end right extended to:")
+          right_next_bnd = self.find_nearest_lane_boundary(right_bnd, lane.road.successor_roads, "end")
+          if right_next_bnd is None:
+            # By extrapolation
             self.extend_bnd_by_extrapolation(right_bnd, "end", d)
+          else:
+            right_bnd.extend(clip_xyxy(right_next_bnd, d))
+
         else: # not lane.is_fake():
           if len(lane.predecessors) != 0:
               # With boundaries of predecessor lane
@@ -921,16 +945,29 @@ class RoadNetwork:
     new_road = Road(road_id)
 
     # Add a full fake lane if any lane has a fake lane neighbor.
-    has_fake_lane = max([len(lane.road.lanes) for lane in route]) > 1
+    # And there's no gaps between their leftmost boundaries.
+    has_fake_lane = np.any(max([lane.road.has_fake_lanes for lane in route]))
     if has_fake_lane:
-      new_fake_lane = Lane(str(road_id)+",99", 99, "JUNCTION_ROAD")
+      left_bnd = [[], []]
+      right_bnd = [[], []]
+      found_gaps_on_fake_lanes = False
       for idx, lane in enumerate(route):
-        new_fake_lane.left_bnd[0] += first(lane.road.lanes.values()).left_bnd[0]
-        new_fake_lane.left_bnd[1] += first(lane.road.lanes.values()).left_bnd[1]
-        new_fake_lane.right_bnd[0] += lane.left_bnd[0]
-        new_fake_lane.right_bnd[1] += lane.left_bnd[1]
-      new_fake_lane.update_poly()
-      new_road.add_lane(new_fake_lane)
+        leftmost_lane = first(lane.road.lanes.values())
+        if len(left_bnd[0]) > 0:
+          d = dist2((left_bnd[0][-1], left_bnd[1][-1]), (leftmost_lane.left_bnd[0][0], leftmost_lane.left_bnd[1][0]))
+          if d > 0.05 * 0.05:
+            found_gaps_on_fake_lanes = True
+            break
+        left_bnd[0] += leftmost_lane.left_bnd[0]
+        left_bnd[1] += leftmost_lane.left_bnd[1]
+        right_bnd[0] += lane.left_bnd[0]
+        right_bnd[1] += lane.left_bnd[1]
+      if not found_gaps_on_fake_lanes:
+        new_fake_lane = Lane(str(road_id) + ",-1", -1, "FAKE")
+        new_fake_lane.left_bnd = left_bnd
+        new_fake_lane.right_bnd = right_bnd
+        new_fake_lane.update_poly()
+        new_road.add_lane(new_fake_lane)
 
     # Build the new lane
     for idx, lane in enumerate(route):
@@ -1009,8 +1046,8 @@ class RoadNetwork:
             routes += self.connecting_road_routes(lane)
       new_junction = Junction(self.generate_extra_junction_id())
       for route in routes:
-        #print([lane.full_id[14:] for lane in route])
         extra_road_id = self.generate_extra_road_id()
+        #print([lane.full_id[14:] for lane in route], f"=> Road[{extra_road_id}]")
         new_road = self.build_road_from_route(route, extra_road_id, road_map, lane_map)
         new_road.junction = new_junction
         #new_road.debug_print()
@@ -1156,6 +1193,7 @@ class RoadNetwork:
     #return
     # Lane shape    
     seps = self.refine_lane_terminals()
+    #return
 
     # Junctions
     self.build_default_junctions(seps)
@@ -1265,7 +1303,7 @@ def draw_lanes(my_map, ax):
       polys.append(poly)
 
       if 0:
-        # Draw extend boundaries.
+        # Draw extended boundaries.
         left_xx = [x for x,y in lane.left_bnd_to_recut]
         left_yy = [y for x,y in lane.left_bnd_to_recut]
         right_xx = [x for x,y in lane.right_bnd_to_recut]
@@ -1364,9 +1402,9 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
   return focused_set
 
 geojson_files = [
-  ("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
+  #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
   #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
-  #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
+  ("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
   #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
 
   #("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
@@ -1382,7 +1420,9 @@ focused_set = {}
 # case A, split overlapped lanes with some non-overlap lane in the same road
 #focused_set = {'557024172,0,0,29,2', '557024172,0,0,26,3', '557024172,0,0,26,1', '557024172,0,0,38,2', '557024172,0,0,28,1', '557024172,0,0,29,1', '557024172,0,0,27,1', '557024172,0,0,28,2', '557024172,0,0,27,2', '557024172,0,0,30,1', '557024172,0,0,38,1', '557024172,0,0,30,0', '557024172,0,0,26,2'}
 # case A, lane width resampling
-focused_set = {'557024172,0,0,52,1', '557024172,0,0,45,1', '557024172,0,0,52,2', '557024172,0,0,51,1', '557024172,0,0,51,2'}
+#focused_set = {'557024172,0,0,52,1', '557024172,0,0,45,1', '557024172,0,0,52,2', '557024172,0,0,51,1', '557024172,0,0,51,2'}
+# case C, failed to build a fake lane with connecting route in the merged junction
+#focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,2', '557392309,0,0,43,1', '557392309,0,0,14,1', '557392309,0,0,15,1', '557392309,0,0,47,1', '557392309,0,0,68,2', '557392309,0,0,68,1', '557392309,0,0,45,1', '557392309,0,0,47,0', '557392309,0,0,14,2', '557392309,0,0,44,1'}
 # case D, topo issue for new roads from routes in junction:
 #focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,1', '557392309,0,0,15,2', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,68,1', '557392309,0,0,47,1', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,47,0', '557392309,0,0,14,1', '557392309,0,0,43,1'}
 # case E, 4 overlapped lanes
@@ -1402,7 +1442,7 @@ focused_set = {'557024172,0,0,52,1', '557024172,0,0,45,1', '557024172,0,0,52,2',
 
 for idx, (case_name, geojson_file, georef) in enumerate(geojson_files):
   print(idx, geojson_file)
-  #run(geojson_file, {}, preview=False, export=True, georef=georef)
+  #ret = run(geojson_file, {}, preview=False, export=True, georef=georef)
   ret = run(geojson_file, focused_set, preview=False, georef=georef)
   print(ret)
 exit()
