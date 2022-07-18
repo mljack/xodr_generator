@@ -12,7 +12,7 @@ from matplotlib.widgets import RectangleSelector
 import polygon_item
 import fig_manipulator
 import xodr_exporter
-from geom_utils import WorldBox, first, dist2, is_almost_the_same_pt, curvature, pt_hash, xxyy2xyxy, xyxy2xxyy
+from geom_utils import WorldBox, first, last, is_almost_the_same_pt, curvature, pt_hash, xxyy2xyxy, xyxy2xxyy
 
 import shapely.geometry as sgeom
 from shapely.ops import split
@@ -297,64 +297,78 @@ class Road:
     new_roads = []
     lanes = list(self.lanes.values())
     lane_idx_base = 0
-    for overlapped_idx, overlapped_lane in enumerate(lanes_overlapped):
+    old_prev_road_set = None
+    old_next_road_set = None
+    last_road = None
+    overlapped_idx = 1
+    while lane_idx_base < len(lanes):
       for lane_idx in range(lane_idx_base, len(lanes)):
         lane = lanes[lane_idx]
-        if lane != overlapped_lane:
-          continue
         lane_idx_base = lane_idx + 1
+        prev_road_set = set([prev.road.original_id for prev in lane.predecessors])
+        next_road_set = set([next.road.original_id for next in lane.successors])
 
-        # Reuse old road for the first overlapped road
-        if overlapped_idx == 0:
-          continue
+        # Reuse old road for the first lane
+        if lane_idx == 0:
+          # Remove lanes from original road
+          self.lanes = OrderedDict()
+          self.lanes[lane.id] = lane
+          new_road = self
+        else:
+          # Generate new road id
+          # 557024174,0,0,20 => 557024174,0,0,10020
+          # 557024174,0,0,20 => 557024174,0,0,20020
+          p = self.id.rfind(",")
+          new_road_id = self.id[:p+1] + str(int(self.id[p+1:]) + 10000*overlapped_idx)
+          overlapped_idx += 1
+          new_road = Road(new_road_id)
+          new_road.original_id = self.id
 
-        # Generate new road id
-        # 557024174,0,0,20 => 557024174,0,0,10020
-        # 557024174,0,0,20 => 557024174,0,0,20020
-        p = self.id.rfind(",")
-        new_road_id = self.id[:p+1] + str(int(self.id[p+1:]) + 10000*overlapped_idx)
-        new_road = Road(new_road_id)
-        new_road.original_id = self.id
-
-        # Use old ref line and lane offset if road are not split.
+        # Use new ref line if road splits otherwise use old ref line and lane offset.
         for lane_k in lanes:
-          prev_road_set = set([prev.road.original_id for prev in overlapped_lane.predecessors])
-          next_road_set = set([next.road.original_id for next in overlapped_lane.successors])
-          prev_road_set |= set([prev.road.original_id for prev in lane_k.predecessors])
-          next_road_set |= set([next.road.original_id for next in lane_k.successors])
-          use_this_ref_line = len(prev_road_set) == 1 and len(next_road_set) == 1
+          prev_set = set([prev.road.original_id for prev in lane_k.predecessors]) | prev_road_set
+          next_set = set([next.road.original_id for next in lane_k.successors]) | next_road_set
+          use_this_ref_line = len(prev_set) == 1 and len(next_set) == 1
           if use_this_ref_line:
-            if lane_k != overlapped_lane:
+            if lane_k != lane:
               fake_lane = Lane(new_road_id + ",-1", "-1", "FAKE")
               fake_lane.left_bnd = lane_k.left_bnd
-              fake_lane.right_bnd = overlapped_lane.left_bnd
+              fake_lane.right_bnd = lane.left_bnd
               fake_lane.update_poly()
               fake_lane.road = new_road
               new_road.add_lane(fake_lane)
             break
 
-        # Add overlapped lane to the road
-        overlapped_lane.road = new_road
-        new_road.add_lane(overlapped_lane)
-
-        # Add non-overlapping lane to the road
-        for j in range(lane_idx+1, len(lanes)):
-          if len(lanes[j].overlapped) == 0:
-            lanes[j].road = new_road
-            new_road.add_lane(lanes[j])
+        # Add lane with the same prev/next to the road
+        overlap_count = 0
+        for j in range(lane_idx, len(lanes)):
+          lane_j = lanes[j]
+          prev_road_set = set([prev.road.original_id for prev in lane_j.predecessors])
+          next_road_set = set([next.road.original_id for next in lane_j.successors])
+          has_same_prev_next_road = (old_prev_road_set is None or prev_road_set == old_prev_road_set)
+          has_same_prev_next_road = has_same_prev_next_road and (old_next_road_set is None or next_road_set == old_next_road_set)
+          old_prev_road_set = prev_road_set
+          old_next_road_set = next_road_set
+          if len(lane_j.overlapped) > 0:
+            overlap_count += 1
+          if j == lane_idx or (has_same_prev_next_road and overlap_count <= 1):
+            lane_j.road = new_road
+            new_road.add_lane(lane_j)
             lane_idx_base = j + 1
           else:
             break
-        self.overlapped_roads.add(new_road)
-        new_road.overlapped_roads.add(self)
-        new_roads.append(new_road)
-    
-    # Remove lanes from original road
-    for new_road in new_roads:
-      for lane_id in new_road.lanes:
-        if not new_road.lanes[lane_id].is_fake():
-          del self.lanes[lane_id]
+        
+        # Update overlapped roads
+        if last_road is not None:
+          real_lanes = [lane for lane in new_road.lanes.values() if not lane.is_fake()]
+          if first(real_lanes) in last(last_road.lanes.values()).overlapped:
+            last_road.overlapped_roads.add(new_road)
+            new_road.overlapped_roads.add(last_road)
 
+        new_roads.append(new_road)
+        last_road = new_road
+        break
+    
     return new_roads
 
   def __repr__(self):
@@ -786,6 +800,7 @@ class RoadNetwork:
     #   (...),
     #   ...
     # ]
+    #self.print_separators(seps)
     self.select_road_direction_at_terminals(seps)
     self.determine_separation_line_base_point(seps)
     self.prepare_for_bnd_recut(seps)
@@ -1066,6 +1081,7 @@ class RoadNetwork:
       road.resample_ref_line(5.0)
       road.compute_ref_line_bc_derivative()
 
+    #return
     # Lane shape    
     seps = self.refine_lane_terminals()
 
@@ -1273,25 +1289,29 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
   return focused_set
 
 geojson_files = [
-  #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
+  ("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
   #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
   #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
-  ("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
+  #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
 
   #("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
-  ##("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # 806010035, 806000036, 806000037
-  ##("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
-  ##("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  ("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # Fixed. connecting road with 2 next roads: 806010035 => {806000036, 806000037}
+  #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # regression: successor: 557371806,0,0,10035,  806000036,   806000037
+  #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"),# regression: successor: 557371806,0,0,10035,  806000036,   806000037
   ##("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # lane shape # ref line cut
   ##("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # lane shape # ref line cut
   ##("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
 
+# case A, split overlapped lanes with some non-overlap lane in the same road
+#focused_set = {'557024172,0,0,29,2', '557024172,0,0,26,3', '557024172,0,0,26,1', '557024172,0,0,38,2', '557024172,0,0,28,1', '557024172,0,0,29,1', '557024172,0,0,27,1', '557024172,0,0,28,2', '557024172,0,0,27,2', '557024172,0,0,30,1', '557024172,0,0,38,1', '557024172,0,0,30,0', '557024172,0,0,26,2'}
 # case D, topo issue for new roads from routes in junction:
-focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,1', '557392309,0,0,15,2', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,68,1', '557392309,0,0,47,1', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,47,0', '557392309,0,0,14,1', '557392309,0,0,43,1'}
+#focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,1', '557392309,0,0,15,2', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,68,1', '557392309,0,0,47,1', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,47,0', '557392309,0,0,14,1', '557392309,0,0,43,1'}
 # case E, 4 overlapped lanes
 #focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
+# case F, split connecting road with 2 next roads
+#focused_set = {'557371806,0,0,37,1', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,34,2', '557371806,0,0,35,1', '557371806,0,0,44,2', '557371806,0,0,36,0', '557371806,0,0,35,2', '557371806,0,0,35,3'}
 
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,35,3', '557371806,0,0,44,2', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,35,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,35,2', '557371806,0,0,36,0', '557371806,0,0,34,2'}
 
