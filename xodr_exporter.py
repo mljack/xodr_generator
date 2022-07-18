@@ -192,9 +192,9 @@ def export_default_junction(odr, junction):
 
 def export(xodr_filename, my_map, offset_x, offset_y, map_ver, georef):
     odr = xodr.OpenDrive(xodr_filename.replace(".json", ""))
-    #odr.add_offset(offset_x, offset_y, 0.0)
-    #odr.add_user_data("inceptioMapVersion", map_ver)
-    #odr.add_user_data("inceptioMapGeoRef", georef)
+    odr.add_offset(offset_x, offset_y, 0.0)
+    odr.add_user_data("inceptioMapVersion", map_ver)
+    odr.add_user_data("inceptioMapGeoRef", georef)
 
     for road_id, road in my_map.roads.items():
         print(f"Exporting Road[{road_id}]...")

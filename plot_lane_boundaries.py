@@ -155,7 +155,7 @@ class Lane:
         to_del.append(lane)
     for lane in to_del:
       self.successors.remove(lane)
-
+      
   def recut_bnd(self, base_pt, heading, start_or_end):
     if self.left_bnd_recut_result is None:
       self.left_bnd_recut_result = self.left_bnd_to_recut
@@ -270,6 +270,32 @@ class Road:
   def clear_topo(self):
     self.predecessor_roads = set()
     self.successor_roads = set()
+
+  def compute_irregular_overlapped_lanes(self):
+    # Contacted
+    lanes = list(self.lanes.values())
+    for idx in range(1, len(lanes)):
+      lane_a = lanes[idx-1]
+      lane_b = lanes[idx]
+      lane_a_left_p1 = (lane_a.left_bnd[0][0], lane_a.left_bnd[1][0])
+      lane_a_left_p2 = (lane_a.left_bnd[0][-1], lane_a.left_bnd[1][-1])
+      lane_a_right_p1 = (lane_a.right_bnd[0][0], lane_a.right_bnd[1][0])
+      lane_a_right_p2 = (lane_a.right_bnd[0][-1], lane_a.right_bnd[1][-1])
+      lane_b_left_p1 = (lane_b.left_bnd[0][0], lane_b.left_bnd[1][0])
+      lane_b_left_p2 = (lane_b.left_bnd[0][-1], lane_b.left_bnd[1][-1])
+      lane_b_right_p1 = (lane_b.right_bnd[0][0], lane_b.right_bnd[1][0])
+      lane_b_right_p2 = (lane_b.right_bnd[0][-1], lane_b.right_bnd[1][-1])
+      head_width_a = math.sqrt(dist2(lane_a_left_p1, lane_a_right_p1))
+      tail_width_a = math.sqrt(dist2(lane_a_left_p2, lane_a_right_p2))
+      head_width_b = math.sqrt(dist2(lane_b_left_p1, lane_b_right_p1))
+      tail_width_b = math.sqrt(dist2(lane_b_left_p2, lane_b_right_p2))
+      head_width = math.sqrt(dist2(lane_a_left_p1, lane_b_right_p1))
+      tail_width = math.sqrt(dist2(lane_a_left_p2, lane_b_right_p2))
+      if lane_a not in lane_b.left_neighbors and lane_b not in lane_a.right_neighbors \
+        and (head_width_a + head_width_b > head_width + 0.05 \
+        or tail_width_a + tail_width_b > tail_width + 0.05):
+        lane_a.overlapped.add(lane_b)
+        lane_b.overlapped.add(lane_a)
 
   def backup_ref_line(self):
     self.old_ref_line = self.ref_line
@@ -542,6 +568,7 @@ class RoadNetwork:
           road.predecessor_roads.add(prev.road)
         for next in lane.successors:
           road.successor_roads.add(next.road)
+      road.compute_irregular_overlapped_lanes()
 
   def split_road_with_overlapped_lanes(self):
     new_roads = []
@@ -1404,7 +1431,7 @@ def run(geojson_file, focused_set2=set(), preview=True, export=False, georef="")
 geojson_files = [
   #("A", "0eca7058-c239-41f3-9f06-8a1243fa2063.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"),
   #("B", "94eeaa34-796c-46d2-89bd-4099f7e70cfc.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.25589706935, 31.1956300958991, 0"), # split ref line not smoothed
-  ("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
+  #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
   #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
 
   #("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
@@ -1413,7 +1440,7 @@ geojson_files = [
   #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"), # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
   #("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # Fixed. lane shape # ref line cut
   #("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # Fixed. lane shape # ref line cut
-  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # irregular overlapped lanes # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
+  ("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # irregular overlapped lanes # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
 
@@ -1429,8 +1456,8 @@ focused_set = {}
 #focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
 # case F, split connecting road with 2 next roads
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,34,2', '557371806,0,0,35,1', '557371806,0,0,44,2', '557371806,0,0,36,0', '557371806,0,0,35,2', '557371806,0,0,35,3'}
-# case K
-#focused_set = {'556940257,0,0,92,2', '556940257,0,0,27,1', '556940257,0,0,91,1', '556940257,0,0,54,1', '556940257,0,0,44,1', '556940257,0,0,91,2', '556940257,0,0,54,2', '556940257,0,0,92,3', '556940257,0,0,52,0', '556940257,0,0,43,1', '556940257,0,0,92,1', '556940257,0,0,43,2', '556940257,0,0,52,1', '556940257,0,0,44,2', '556940257,0,0,27,2', '556940257,0,0,66,1', '556940257,0,0,91,3'}
+# case K, irregular overlapped lanes
+focused_set = {'556940257,0,0,92,2', '556940257,0,0,27,1', '556940257,0,0,91,1', '556940257,0,0,54,1', '556940257,0,0,44,1', '556940257,0,0,91,2', '556940257,0,0,54,2', '556940257,0,0,92,3', '556940257,0,0,52,0', '556940257,0,0,43,1', '556940257,0,0,92,1', '556940257,0,0,43,2', '556940257,0,0,52,1', '556940257,0,0,44,2', '556940257,0,0,27,2', '556940257,0,0,66,1', '556940257,0,0,91,3'}
 
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,35,3', '557371806,0,0,44,2', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,35,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,35,2', '557371806,0,0,36,0', '557371806,0,0,34,2'}
 
