@@ -155,7 +155,7 @@ class Lane:
         to_del.append(lane)
     for lane in to_del:
       self.successors.remove(lane)
-      
+
   def recut_bnd(self, base_pt, heading, start_or_end):
     if self.left_bnd_recut_result is None:
       self.left_bnd_recut_result = self.left_bnd_to_recut
@@ -296,6 +296,20 @@ class Road:
         or tail_width_a + tail_width_b > tail_width + 0.05):
         lane_a.overlapped.add(lane_b)
         lane_b.overlapped.add(lane_a)
+
+  def predecessor_overlapped_roads(self):
+    roads = list(self.predecessor_roads)
+    for road in self.predecessor_roads:
+      roads += list(road.overlapped_roads)
+    roads.sort(key=lambda r: r.id)
+    return roads
+
+  def successor_overlapped_roads(self):
+    roads = list(self.successor_roads)
+    for road in self.successor_roads:
+      roads += list(road.overlapped_roads)
+    roads.sort(key=lambda r: r.id)
+    return roads
 
   def backup_ref_line(self):
     self.old_ref_line = self.ref_line
@@ -801,7 +815,7 @@ class RoadNetwork:
           # Extend boundaries of fake lanes.
           # Find nearest boundaries in predecessor_roads/successor_roads
           #print(f"Lane[{lane}] start left extended to:")
-          left_prev_bnd = self.find_nearest_lane_boundary(left_bnd, lane.road.predecessor_roads, "start")
+          left_prev_bnd = self.find_nearest_lane_boundary(left_bnd, lane.road.predecessor_overlapped_roads(), "start")
           if left_prev_bnd is None:
             # By extrapolation
             self.extend_bnd_by_extrapolation(left_bnd, "start", d)
@@ -809,7 +823,7 @@ class RoadNetwork:
             left_bnd.extendleft(clip_xyxy(reversed(left_prev_bnd), d))
 
           #print(f"Lane[{lane}] start right extended to:")
-          right_prev_bnd = self.find_nearest_lane_boundary(right_bnd, lane.road.predecessor_roads, "start")
+          right_prev_bnd = self.find_nearest_lane_boundary(right_bnd, lane.road.predecessor_overlapped_roads(), "start")
           if right_prev_bnd is None:
             # By extrapolation
             self.extend_bnd_by_extrapolation(right_bnd, "start", d)
@@ -817,14 +831,14 @@ class RoadNetwork:
             right_bnd.extendleft(clip_xyxy(reversed(right_prev_bnd), d))
 
           #print(f"Lane[{lane}] end left extended to:")
-          left_next_bnd = self.find_nearest_lane_boundary(left_bnd, lane.road.successor_roads, "end")
+          left_next_bnd = self.find_nearest_lane_boundary(left_bnd, lane.road.successor_overlapped_roads(), "end")
           if left_next_bnd is None:
             # By extrapolation
             self.extend_bnd_by_extrapolation(left_bnd, "end", d)
           else:
             left_bnd.extend(clip_xyxy(left_next_bnd, d))
           #print(f"Lane[{lane}] end right extended to:")
-          right_next_bnd = self.find_nearest_lane_boundary(right_bnd, lane.road.successor_roads, "end")
+          right_next_bnd = self.find_nearest_lane_boundary(right_bnd, lane.road.successor_overlapped_roads(), "end")
           if right_next_bnd is None:
             # By extrapolation
             self.extend_bnd_by_extrapolation(right_bnd, "end", d)
@@ -1434,13 +1448,13 @@ geojson_files = [
   #("C", "ee2dcc13-a190-48b3-b93f-fc54e2dd9c65.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.285684663802, 36.722913114354, 0"), # Fixed. overlap related. topo: 557392309,0,0,43,1 => 557392309,0,0,14,2
   #("D", "e2b2f2dc-2436-4870-bb8b-ad5db9db1319.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"), # Fixed. topo 557392309,0,0,43,1 => 557392309,0,0,14,2
 
-  #("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
+  ("E", "d6661a91-73af-43fc-bb6b-72bb6b1a2217.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.2231055554, 28.8839460443705, 0"), # Fixed. 4 overlapped lanes in one road. 557004510,0,0,3,4-1, assert(len(lanes_overlapped) == 2)
   #("F", "3db742cb-855d-4c4f-9f1f-1b6ff3621050.json", "3 | 0 | IGS& 4 | 1 | ENU, 118.727868469432, 34.9886784050614, 0"), # Fixed. connecting road with 2 next roads: 806010035 => {806000036, 806000037}
   #("G", "75067911-549b-4604-8021-3ebc965cd57b.json", "3 | 0 | IGS& 4 | 1 | ENU, 119.01238177903, 34.8047443293035, 0"),  # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
   #("H", "dfdafe92-be1a-41c7-a281-ad92d5a94085.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.257908642292, 31.1970074102283, 0"), # Fixed. regression: successor: 557371806,0,0,10035,  806000036,   806000037
   #("I", "099f151a-d366-4afd-b6ce-b45f6c8b088d.json", "3 | 0 | IGS& 4 | 1 | ENU, 121.254792921245, 31.1981098819524, 0"), # Fixed. lane shape # ref line cut
   #("J", "8ae44542-62df-4e77-913c-f6ed40c8642a.json", "3 | 0 | IGS& 4 | 1 | ENU, 117.746589006856, 31.7915460281074, 0"), # Fixed. lane shape # ref line cut
-  ("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # irregular overlapped lanes # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
+  #("K", "e4b90479-6c46-4674-9870-224beacd90e0.json", "3 | 0 | IGS& 4 | 1 | ENU, 114.40930718556, 30.8577782101929, 0"), # irregular overlapped lanes # ref line cut # 556940257,0,0,27, 556940257,0,0,43, 556940257,0,0,10027 assert(len(base_pts) > 0 or len(sep.terminals) == 2)
   ]
 focused_set = {}
 
@@ -1454,10 +1468,12 @@ focused_set = {}
 #focused_set = {'557392309,0,0,15,3', '557392309,0,0,15,1', '557392309,0,0,15,2', '557392309,0,0,68,2', '557392309,0,0,45,1', '557392309,0,0,68,1', '557392309,0,0,47,1', '557392309,0,0,44,1', '557392309,0,0,14,2', '557392309,0,0,47,0', '557392309,0,0,14,1', '557392309,0,0,43,1'}
 # case E, 4 overlapped lanes
 #focused_set = {'557004510,0,0,9,2', '557004510,0,0,9,1', '557004510,0,0,3,1', '557004510,0,0,46,2', '557004510,0,0,44,1', '557004510,0,0,3,3', '557004510,0,0,8,2', '557004510,0,0,3,4', '557004510,0,0,46,1', '557004510,0,0,7,1', '557004510,0,0,7,0', '557004510,0,0,44,2', '557004510,0,0,3,2', '557004510,0,0,8,1'}
+# case E, issue in extending boundaries of fake lanes
+focused_set = {'557004510,0,0,26,2', '557004510,0,0,2,0', '557004510,0,0,5,2', '557004510,0,0,43,1', '557004510,0,0,6,1', '557004510,0,0,6,2', '557004510,0,0,43,2', '557004510,0,0,10,2', '557004510,0,0,5,3', '557004510,0,0,4,2', '557004510,0,0,26,1', '557004510,0,0,5,4', '557004510,0,0,10,1', '557004510,0,0,4,1', '557004510,0,0,5,1', '557004510,0,0,6,3', '557004510,0,0,2,1'}
 # case F, split connecting road with 2 next roads
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,34,2', '557371806,0,0,35,1', '557371806,0,0,44,2', '557371806,0,0,36,0', '557371806,0,0,35,2', '557371806,0,0,35,3'}
 # case K, irregular overlapped lanes
-focused_set = {'556940257,0,0,92,2', '556940257,0,0,27,1', '556940257,0,0,91,1', '556940257,0,0,54,1', '556940257,0,0,44,1', '556940257,0,0,91,2', '556940257,0,0,54,2', '556940257,0,0,92,3', '556940257,0,0,52,0', '556940257,0,0,43,1', '556940257,0,0,92,1', '556940257,0,0,43,2', '556940257,0,0,52,1', '556940257,0,0,44,2', '556940257,0,0,27,2', '556940257,0,0,66,1', '556940257,0,0,91,3'}
+#focused_set = {'556940257,0,0,92,2', '556940257,0,0,27,1', '556940257,0,0,91,1', '556940257,0,0,54,1', '556940257,0,0,44,1', '556940257,0,0,91,2', '556940257,0,0,54,2', '556940257,0,0,92,3', '556940257,0,0,52,0', '556940257,0,0,43,1', '556940257,0,0,92,1', '556940257,0,0,43,2', '556940257,0,0,52,1', '556940257,0,0,44,2', '556940257,0,0,27,2', '556940257,0,0,66,1', '556940257,0,0,91,3'}
 
 #focused_set = {'557371806,0,0,37,1', '557371806,0,0,35,3', '557371806,0,0,44,2', '557371806,0,0,44,1', '557371806,0,0,38,1', '557371806,0,0,35,1', '557371806,0,0,36,1', '557371806,0,0,34,1', '557371806,0,0,35,2', '557371806,0,0,36,0', '557371806,0,0,34,2'}
 
